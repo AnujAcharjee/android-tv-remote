@@ -1,11 +1,11 @@
 /**
  * VoiceSearchModal Component
- * Interactive Voice Search Dialog for TV searching.
- * Supports Web Speech API, keyboard voice dictation, TV on-screen voice search,
- * and 1-tap topic search shortcuts.
+ * Interactive Voice Search Dialog for TV searching (YouTube, TV input, universal search).
+ * Takes speech input from phone microphone (expo-av) or keyboard dictation,
+ * and sends it directly to YouTube or active TV input box.
  */
 
-import { Check, Edit2, Mic, Search, Sparkles, Tv, X } from 'lucide-react-native';
+import { Check, Edit2, Mic, MicOff, Play, Search, Sparkles, Tv, X } from 'lucide-react-native';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -31,14 +31,12 @@ interface VoiceSearchModalProps {
 }
 
 const QUICK_SUGGESTIONS = [
-  'Avatar',
-  'Stranger Things',
-  'Action Movies',
-  'Comedy Specials',
-  'Trending Music',
-  'Cartoons for Kids',
-  'Live Cricket',
-  'Latest News',
+  'lofi hip hop',
+  'trending music',
+  'latest news',
+  'funny comedy',
+  '4k hdr demo',
+  'live sports',
 ];
 
 export const VoiceSearchModal: React.FC<VoiceSearchModalProps> = ({
@@ -46,27 +44,32 @@ export const VoiceSearchModal: React.FC<VoiceSearchModalProps> = ({
   onClose,
   onSearchSubmitted,
 }) => {
+  const { triggerLight, triggerMedium, triggerSuccess, triggerError } = useHaptics();
+
   const [isListening, setIsListening] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [query, setQuery] = useState('');
-  const [statusText, setStatusText] = useState('Tap microphone to speak or search');
-  const [isSent, setIsSent] = useState(false);
+  const [statusText, setStatusText] = useState('Tap microphone to speak into phone');
   const [isSending, setIsSending] = useState(false);
-  const inputRef = useRef<any>(null);
+  const [isSent, setIsSent] = useState(false);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const pulseLoop = useRef<Animated.CompositeAnimation | null>(null);
-  const { triggerSuccess, triggerLight, triggerMedium } = useHaptics();
+  const inputRef = useRef<any>(null);
 
   useEffect(() => {
     if (visible) {
       setQuery('');
-      setIsListening(false);
       setIsSent(false);
-      setIsSending(false);
-      setStatusText('Tap microphone to speak or search');
-    } else {
+      setIsListening(false);
+      setIsTranscribing(false);
+      setStatusText('Tap microphone to speak into phone');
       stopPulse();
+    } else {
       VoiceService.stopListening();
+      setIsListening(false);
+      setIsTranscribing(false);
+      stopPulse();
     }
   }, [visible]);
 
@@ -75,14 +78,14 @@ export const VoiceSearchModal: React.FC<VoiceSearchModalProps> = ({
     pulseLoop.current = Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
-          toValue: 1.25,
-          duration: 700,
+          toValue: 1.35,
+          duration: 650,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: true,
         }),
         Animated.timing(pulseAnim, {
           toValue: 1,
-          duration: 700,
+          duration: 650,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: true,
         }),
@@ -98,44 +101,78 @@ export const VoiceSearchModal: React.FC<VoiceSearchModalProps> = ({
     }
     Animated.timing(pulseAnim, {
       toValue: 1,
-      duration: 200,
+      duration: 150,
       useNativeDriver: true,
     }).start();
   };
 
-  const handleToggleMic = () => {
+  const handleToggleMic = async () => {
     triggerMedium();
 
-    if (VoiceService.isWebSpeechSupported()) {
-      if (isListening) {
-        VoiceService.stopListening();
-        setIsListening(false);
-        stopPulse();
-        setStatusText('Listening stopped');
-      } else {
-        setIsListening(true);
-        startPulse();
-        setStatusText('Listening... Speak now');
-        VoiceService.startListening(
-          (text) => {
-            setQuery(text);
-            setIsListening(false);
-            stopPulse();
-            setStatusText(`Recognized: "${text}"`);
-            triggerSuccess();
-          },
-          (err) => {
-            setIsListening(false);
-            stopPulse();
-            setStatusText('Could not hear audio. Tap below to speak.');
-          }
-        );
+    if (isListening) {
+      // User tapped stop: finish recording and transcribe speech
+      stopPulse();
+      setIsListening(false);
+      setIsTranscribing(true);
+      setStatusText('Transcribing speech...');
+
+      try {
+        const text = await VoiceService.stopRecordingAndTranscribe();
+        if (text) {
+          setQuery(text);
+          setStatusText(`Recognized: "${text}"`);
+          triggerSuccess();
+        } else {
+          setStatusText('No speech detected. Tap mic to retry.');
+        }
+      } catch (err: any) {
+        setStatusText(err?.message || 'Could not recognize speech');
+        triggerError();
+      } finally {
+        setIsTranscribing(false);
       }
     } else {
-      // Also send TV Voice Search so TV opens its microphone on screen
-      remoteService.sendButton('SEARCH');
-      setStatusText('TV Voice search opened! Or speak into input below.');
-      inputRef.current?.focus();
+      // User tapped start: begin listening from phone microphone
+      try {
+        setQuery('');
+        setIsListening(true);
+        startPulse();
+        setStatusText('Listening... Speak now into your phone');
+
+        await VoiceService.startRecording((status) => {
+          setStatusText(status);
+        });
+      } catch (err: any) {
+        stopPulse();
+        setIsListening(false);
+        setStatusText('Mic unavailable. Type or use keyboard voice.');
+        inputRef.current?.focus();
+        triggerError();
+      }
+    }
+  };
+
+  const handleSearchYouTube = async (searchQuery: string) => {
+    const textToSend = searchQuery.trim();
+    if (!textToSend || isSending) return;
+
+    triggerSuccess();
+    setIsSending(true);
+    setIsSent(true);
+    setStatusText(`Searching YouTube for "${textToSend}"...`);
+
+    try {
+      await VoiceService.searchYouTubeOnTv(textToSend);
+      if (onSearchSubmitted) {
+        onSearchSubmitted(textToSend);
+      }
+      setTimeout(() => {
+        onClose();
+      }, 1000);
+    } catch {
+      setStatusText('Failed to open YouTube search');
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -146,32 +183,21 @@ export const VoiceSearchModal: React.FC<VoiceSearchModalProps> = ({
     triggerSuccess();
     setIsSending(true);
     setIsSent(true);
-    setStatusText(`Searching "${textToSend}" on TV...`);
+    setStatusText(`Typing "${textToSend}" on TV...`);
 
     try {
       await VoiceService.sendSearchQueryToTv(textToSend);
-
       if (onSearchSubmitted) {
         onSearchSubmitted(textToSend);
       }
-
       setTimeout(() => {
         onClose();
-      }, 1200);
-    } catch (e) {
+      }, 1000);
+    } catch {
       setStatusText('Failed to send text to TV');
     } finally {
       setIsSending(false);
     }
-  };
-
-  const handleTriggerTVNativeSearch = () => {
-    triggerLight();
-    VoiceService.triggerTvVoiceSearch();
-    setStatusText('TV Voice Search opened on your screen');
-    setTimeout(() => {
-      onClose();
-    }, 800);
   };
 
   return (
@@ -210,14 +236,23 @@ export const VoiceSearchModal: React.FC<VoiceSearchModalProps> = ({
               ]}
             />
             <TouchableOpacity
-              style={[styles.micButton, isListening && styles.micButtonActive]}
+              style={[
+                styles.micButton,
+                isListening && styles.micButtonActive,
+                isTranscribing && styles.micButtonTranscribing,
+              ]}
               onPress={handleToggleMic}
+              disabled={isTranscribing}
               activeOpacity={0.8}
             >
-              <Mic
-                size={36}
-                color={isListening ? '#FFFFFF' : THEME.colors.primary}
-              />
+              {isTranscribing ? (
+                <ActivityIndicator size="large" color="#FFFFFF" />
+              ) : (
+                <Mic
+                  size={36}
+                  color={isListening ? '#FFFFFF' : THEME.colors.primary}
+                />
+              )}
             </TouchableOpacity>
             <Text style={styles.statusLabel}>{statusText}</Text>
           </View>
@@ -230,31 +265,49 @@ export const VoiceSearchModal: React.FC<VoiceSearchModalProps> = ({
               style={styles.input}
               value={query}
               onChangeText={setQuery}
-              placeholder="Speak with keyboard mic or type..."
+              placeholder="Speak with mic above or keyboard..."
               placeholderTextColor={THEME.colors.textMuted}
               returnKeyType="search"
-              onSubmitEditing={() => handleSendToTV(query)}
+              onSubmitEditing={() => handleSearchYouTube(query)}
             />
             {query.trim().length > 0 ? (
               <TouchableOpacity
-                style={[styles.sendButton, isSent && styles.sendButtonSuccess]}
-                onPress={() => handleSendToTV(query)}
-                disabled={isSending}
+                style={styles.clearButton}
+                onPress={() => setQuery('')}
               >
-                {isSending ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : isSent ? (
-                  <Check size={16} color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.sendButtonText}>Search</Text>
-                )}
+                <X size={16} color={THEME.colors.textMuted} />
               </TouchableOpacity>
             ) : null}
           </View>
 
+          {/* ACTION BUTTONS (YOUTUBE & TV INPUT) */}
+          {query.trim().length > 0 ? (
+            <View style={styles.actionRow}>
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.actionBtnYouTube]}
+                onPress={() => handleSearchYouTube(query)}
+                disabled={isSending}
+                activeOpacity={0.8}
+              >
+                <Play size={16} color="#FFFFFF" fill="#FFFFFF" />
+                <Text style={styles.actionBtnText}>Search YouTube</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.actionBtnType]}
+                onPress={() => handleSendToTV(query)}
+                disabled={isSending}
+                activeOpacity={0.8}
+              >
+                <Tv size={16} color="#FFFFFF" />
+                <Text style={styles.actionBtnText}>Type on TV</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
           {/* QUICK TOPIC SUGGESTIONS */}
           <View style={styles.suggestionsContainer}>
-            <Text style={styles.suggestionsHeader}>QUICK SEARCH</Text>
+            <Text style={styles.suggestionsHeader}>QUICK YOUTUBE SEARCH</Text>
             <View style={styles.pillsRow}>
               {QUICK_SUGGESTIONS.map((suggestion) => (
                 <TouchableOpacity
@@ -262,7 +315,7 @@ export const VoiceSearchModal: React.FC<VoiceSearchModalProps> = ({
                   style={styles.pill}
                   onPress={() => {
                     setQuery(suggestion);
-                    handleSendToTV(suggestion);
+                    handleSearchYouTube(suggestion);
                   }}
                 >
                   <Text style={styles.pillText}>{suggestion}</Text>
@@ -270,17 +323,6 @@ export const VoiceSearchModal: React.FC<VoiceSearchModalProps> = ({
               ))}
             </View>
           </View>
-
-          {/* TV NATIVE VOICE SEARCH SHORTCUT */}
-          <TouchableOpacity
-            style={styles.tvSearchShortcut}
-            onPress={handleTriggerTVNativeSearch}
-          >
-            <Tv size={18} color={THEME.colors.primary} />
-            <Text style={styles.tvSearchShortcutText}>
-              Open TV's On-Screen Voice Search Overlay
-            </Text>
-          </TouchableOpacity>
         </View>
       </View>
     </Modal>
@@ -320,98 +362,115 @@ const styles = StyleSheet.create({
     color: THEME.colors.textPrimary,
   },
   closeButton: {
-    width: 32,
-    height: 32,
+    padding: 6,
     borderRadius: 16,
     backgroundColor: THEME.colors.surfaceElevated,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   micSection: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginVertical: 12,
+    paddingVertical: 18,
+    position: 'relative',
   },
   pulseRing: {
     position: 'absolute',
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    backgroundColor: 'rgba(235, 127, 36, 0.15)',
+    width: 86,
+    height: 86,
+    borderRadius: 43,
+    backgroundColor: 'rgba(99, 102, 241, 0.2)',
   },
   pulseRingActive: {
-    backgroundColor: 'rgba(235, 87, 87, 0.35)',
+    backgroundColor: 'rgba(239, 68, 68, 0.25)',
   },
   micButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: 76,
+    height: 76,
+    borderRadius: 38,
     backgroundColor: THEME.colors.surfaceElevated,
+    justifyContent: 'center',
+    alignItems: 'center',
     borderWidth: 2,
     borderColor: THEME.colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
+    elevation: 4,
     shadowColor: THEME.colors.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
-    elevation: 6,
   },
   micButtonActive: {
-    backgroundColor: THEME.colors.accentRed,
-    borderColor: '#FFFFFF',
-    shadowColor: THEME.colors.accentRed,
+    backgroundColor: '#EF4444',
+    borderColor: '#F87171',
+    shadowColor: '#EF4444',
+  },
+  micButtonTranscribing: {
+    backgroundColor: THEME.colors.primary,
+    borderColor: THEME.colors.primary,
   },
   statusLabel: {
-    marginTop: 12,
     fontSize: 13,
-    fontWeight: '600',
     color: THEME.colors.textSecondary,
+    marginTop: 12,
     textAlign: 'center',
+    fontWeight: '500',
   },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: THEME.colors.surfaceElevated,
-    borderRadius: THEME.borderRadius.md,
+    backgroundColor: THEME.colors.background,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
     borderWidth: 1,
     borderColor: THEME.colors.surfaceBorder,
-    paddingHorizontal: 12,
-    marginVertical: 12,
-    height: 48,
+    marginBottom: 14,
   },
   searchIcon: {
     marginRight: 8,
   },
   input: {
     flex: 1,
-    height: 48,
-    color: THEME.colors.textPrimary,
     fontSize: 15,
+    color: THEME.colors.textPrimary,
   },
-  sendButton: {
+  clearButton: {
+    padding: 4,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  actionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    gap: 8,
+    elevation: 2,
+  },
+  actionBtnYouTube: {
+    backgroundColor: '#DC2626',
+  },
+  actionBtnType: {
     backgroundColor: THEME.colors.primary,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 8,
-    marginLeft: 8,
   },
-  sendButtonSuccess: {
-    backgroundColor: THEME.colors.accentGreen,
-  },
-  sendButtonText: {
+  actionBtnText: {
     color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '600',
+    fontSize: 14,
   },
   suggestionsContainer: {
     marginTop: 6,
+    marginBottom: 8,
   },
   suggestionsHeader: {
     fontSize: 11,
     fontWeight: '700',
-    letterSpacing: 1,
     color: THEME.colors.textMuted,
+    letterSpacing: 1,
     marginBottom: 8,
   },
   pillsRow: {
@@ -423,7 +482,7 @@ const styles = StyleSheet.create({
     backgroundColor: THEME.colors.surfaceElevated,
     paddingHorizontal: 12,
     paddingVertical: 7,
-    borderRadius: 20,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: THEME.colors.surfaceBorder,
   },
@@ -431,20 +490,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: THEME.colors.textSecondary,
     fontWeight: '500',
-  },
-  tvSearchShortcut: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: 14,
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: THEME.colors.surfaceBorder,
-  },
-  tvSearchShortcutText: {
-    fontSize: 13,
-    color: THEME.colors.primary,
-    fontWeight: '600',
   },
 });

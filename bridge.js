@@ -62,9 +62,15 @@ const server = http.createServer((req, res) => {
           }
         } catch {}
 
-        const tempFile = path.join(__dirname, `temp_voice_${Date.now()}.wav`);
+        let ext = '.wav';
+        if (audioBuffer.length >= 8 && audioBuffer.slice(4, 8).toString('utf8') === 'ftyp') {
+          ext = '.m4a';
+        } else if (audioBuffer.length >= 4 && audioBuffer.slice(0, 4).toString('utf8') === 'OggS') {
+          ext = '.ogg';
+        }
+        const tempFile = path.join(__dirname, `temp_voice_${Date.now()}${ext}`);
         fs.writeFileSync(tempFile, audioBuffer);
-        console.log(`[Bridge Voice] Audio received (${audioBuffer.length} bytes), transcribing speech...`);
+        console.log(`[Bridge Voice] Audio received (${audioBuffer.length} bytes, format: ${ext}), transcribing speech...`);
 
         const psArgs = [
           '-NoProfile',

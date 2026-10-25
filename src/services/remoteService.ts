@@ -385,6 +385,20 @@ export class RemoteService {
   }
 
   /**
+   * Directly opens YouTube on TV searching for the given query
+   */
+  public async searchYouTube(query: string): Promise<boolean> {
+    const cleanQuery = query.trim();
+    if (!cleanQuery) return false;
+
+    console.log(`[RemoteService] Opening YouTube on TV searching for "${cleanQuery}"...`);
+    return this.sendRequest('ssap://system.launcher/open', {
+      id: 'youtube.leanback.v4',
+      contentId: `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQuery)}`,
+    });
+  }
+
+  /**
    * Sends text input to the active input/search field on the TV (Hotstar, YouTube, Netflix, system search)
    */
   public async sendText(text: string): Promise<boolean> {
