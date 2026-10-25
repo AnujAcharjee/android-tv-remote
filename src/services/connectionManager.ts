@@ -219,6 +219,7 @@ export class ConnectionManager {
   public static async forgetDevice(tv: DiscoveredTV): Promise<void> {
     this.disconnect();
     await SecureStorageService.forgetDevice(tv.id, tv.host);
+    DiscoveryService.removeDevice(tv.id);
     this.setState('idle', null);
   }
 

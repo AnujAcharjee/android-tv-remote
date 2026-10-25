@@ -11,12 +11,15 @@ export type TVConnectionState =
   | 'connected'
   | 'failed';
 
+export type TVProtocolType = 'webos' | 'androidtv' | 'auto';
+
 export interface DiscoveredTV {
   id: string;             // Unique identifier (e.g. mDNS name, MAC, or IP:Port)
   name: string;           // Display name (e.g. "Smart TV (Living Room)")
   host: string;           // IP address or hostname (e.g. "192.168.1.50")
   pairingPort: number;    // Port for pairing handshake
   remotePort: number;     // Port for remote commands
+  protocolType?: TVProtocolType; // Protocol used (webos, androidtv, auto)
   model?: string;         // Device model string
   isPaired?: boolean;     // Whether stored credentials exist for this device
   lastSeen?: number;      // Epoch timestamp of last discovery packet
@@ -28,6 +31,7 @@ export interface StoredTVDevice {
   host: string;
   pairingPort: number;
   remotePort: number;
+  protocolType?: TVProtocolType;
   pairedAt: number;
 }
 

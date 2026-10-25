@@ -10,6 +10,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Trash2,
   Tv,
   Wifi,
 } from 'lucide-react-native';
@@ -46,11 +47,18 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({
     startDiscovery,
     selectDevice,
     addManualDevice,
+    forgetDevice,
   } = useTVConnection();
 
   const [manualModalVisible, setManualModalVisible] = useState(false);
   const [manualHost, setManualHost] = useState('');
   const [manualName, setManualName] = useState('');
+  const [isDetecting, setIsDetecting] = useState(false);
+
+  // Automatically discover TVs on the local network as soon as the screen opens
+  React.useEffect(() => {
+    startDiscovery();
+  }, []);
 
   const handleSelect = async (item: DiscoveredTV) => {
     if (onDeviceSelected) {
@@ -61,53 +69,82 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({
   };
 
   const handleAddManual = async () => {
-    if (!manualHost.trim()) return;
-    setManualModalVisible(false);
-    await addManualDevice(manualHost.trim(), manualName.trim() || undefined);
-    setManualHost('');
-    setManualName('');
+    if (!manualHost.trim() || isDetecting) return;
+    setIsDetecting(true);
+    try {
+      await addManualDevice(manualHost.trim(), manualName.trim() || undefined);
+      setManualModalVisible(false);
+      setManualHost('');
+      setManualName('');
+    } finally {
+      setIsDetecting(false);
+    }
   };
 
   const renderItem = ({ item }: { item: DiscoveredTV }) => {
     const isThisConnected = connectionState === 'connected' && currentTv?.id === item.id;
     const isThisSelected = currentTv?.id === item.id;
+    const protocolLabel = item.protocolType === 'webos' || item.pairingPort === 3001 || item.remotePort === 3001
+      ? 'LG webOS'
+      : item.protocolType === 'androidtv' || item.pairingPort === 6467
+      ? 'Android TV'
+      : 'Smart TV';
 
     return (
-      <TouchableOpacity
+      <View
         style={[
           styles.deviceCard,
           isThisConnected && styles.deviceCardConnected,
         ]}
-        onPress={() => handleSelect(item)}
-        activeOpacity={0.7}
-        accessibilityLabel={`Connect to ${item.name}`}
-        accessibilityRole="button"
       >
-        <View style={styles.deviceIconBadge}>
-          <Tv
-            size={24}
-            color={isThisConnected ? '#10B981' : THEME.colors.primary}
-          />
-        </View>
-
-        <View style={styles.deviceDetails}>
-          <Text style={styles.deviceName} numberOfLines={1}>{item.name}</Text>
-          <Text style={styles.deviceIp}>
-            {item.host} • {item.isPaired ? 'Previously Paired' : 'Ready to Pair'}
-          </Text>
-        </View>
-
-        {isThisConnected ? (
-          <View style={styles.connectedBadge}>
-            <CheckCircle2 size={16} color="#10B981" />
-            <Text style={styles.connectedBadgeText}>Connected</Text>
+        <TouchableOpacity
+          style={styles.deviceCardPressable}
+          onPress={() => handleSelect(item)}
+          activeOpacity={0.7}
+          accessibilityLabel={`Connect to ${item.name}`}
+          accessibilityRole="button"
+        >
+          <View style={styles.deviceIconBadge}>
+            <Tv
+              size={24}
+              color={isThisConnected ? '#10B981' : THEME.colors.primary}
+            />
           </View>
-        ) : isThisSelected && (connectionState === 'deviceSelected' || connectionState === 'pairing') ? (
-          <ActivityIndicator size="small" color={THEME.colors.primary} />
-        ) : (
-          <ChevronRight size={20} color={THEME.colors.textMuted} />
-        )}
-      </TouchableOpacity>
+
+          <View style={styles.deviceDetails}>
+            <View style={styles.deviceTitleRow}>
+              <Text style={styles.deviceName} numberOfLines={1}>{item.name}</Text>
+              <View style={styles.protocolBadge}>
+                <Text style={styles.protocolBadgeText}>{protocolLabel}</Text>
+              </View>
+            </View>
+            <Text style={styles.deviceIp}>
+              {item.host} • {item.isPaired ? 'Paired' : 'Ready to Connect'}
+            </Text>
+          </View>
+
+          {isThisConnected ? (
+            <View style={styles.connectedBadge}>
+              <CheckCircle2 size={16} color="#10B981" />
+              <Text style={styles.connectedBadgeText}>Connected</Text>
+            </View>
+          ) : isThisSelected && (connectionState === 'deviceSelected' || connectionState === 'pairing') ? (
+            <ActivityIndicator size="small" color={THEME.colors.primary} />
+          ) : (
+            <ChevronRight size={20} color={THEME.colors.textMuted} />
+          )}
+        </TouchableOpacity>
+
+        {item.isPaired && !isThisConnected ? (
+          <TouchableOpacity
+            style={styles.forgetButton}
+            onPress={() => forgetDevice(item)}
+            accessibilityLabel="Forget device"
+          >
+            <Trash2 size={16} color={THEME.colors.textMuted} />
+          </TouchableOpacity>
+        ) : null}
+      </View>
     );
   };
 
@@ -139,7 +176,7 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({
       </View>
 
       <Text style={styles.subtitle}>
-        Select your Android TV or Google TV on Wi-Fi to start pairing.
+        Automatically discovering Smart TVs &amp; Android TVs on your Wi-Fi.
       </Text>
 
       {/* Primary "Search for TVs" Button */}
@@ -157,7 +194,7 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({
             <Search size={18} color="#FFFFFF" style={{ marginRight: 8 }} />
           )}
           <Text style={styles.searchButtonText}>
-            {isScanning ? 'Searching Local Network...' : 'Search for TVs'}
+            {isScanning ? 'Scanning Wi-Fi for TVs...' : 'Rescan Wi-Fi Network'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -180,9 +217,13 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({
               <View style={styles.emptyIconCircle}>
                 <Wifi size={36} color={THEME.colors.textMuted} />
               </View>
-              <Text style={styles.emptyTitle}>No TVs found yet</Text>
+              <Text style={styles.emptyTitle}>
+                {isScanning ? 'Scanning your Wi-Fi network...' : 'No TVs found'}
+              </Text>
               <Text style={styles.emptySubtitle}>
-                Make sure your Android TV is turned on and connected to the same Wi-Fi network, then tap "Search for TVs".
+                {isScanning
+                  ? 'Searching for nearby Smart TVs and Android TVs...'
+                  : 'Ensure your TV is turned on and connected to the same Wi-Fi, then tap "Rescan Wi-Fi Network".'}
               </Text>
             </View>
           }
@@ -232,12 +273,16 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({
               <TouchableOpacity
                 style={[
                   styles.modalConnectButton,
-                  !manualHost.trim() && styles.modalConnectDisabled,
+                  (!manualHost.trim() || isDetecting) && styles.modalConnectDisabled,
                 ]}
                 onPress={handleAddManual}
-                disabled={!manualHost.trim()}
+                disabled={!manualHost.trim() || isDetecting}
               >
-                <Text style={styles.modalConnectText}>Pair TV</Text>
+                {isDetecting ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.modalConnectText}>Detect &amp; Pair TV</Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -324,10 +369,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: THEME.colors.surface,
-    padding: 16,
+    padding: 14,
     borderRadius: THEME.borderRadius.lg,
     borderWidth: 1,
     borderColor: THEME.colors.surfaceBorder,
+  },
+  deviceCardPressable: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   deviceCardConnected: {
     borderColor: '#10B981',
@@ -345,15 +395,35 @@ const styles = StyleSheet.create({
   deviceDetails: {
     flex: 1,
   },
-  deviceName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: THEME.colors.textPrimary,
+  deviceTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     marginBottom: 4,
   },
+  protocolBadge: {
+    backgroundColor: 'rgba(79, 128, 255, 0.15)',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  protocolBadgeText: {
+    color: THEME.colors.primary,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  deviceName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: THEME.colors.textPrimary,
+  },
   deviceIp: {
-    fontSize: 13,
+    fontSize: 12,
     color: THEME.colors.textMuted,
+  },
+  forgetButton: {
+    padding: 8,
+    marginLeft: 6,
   },
   connectedBadge: {
     flexDirection: 'row',

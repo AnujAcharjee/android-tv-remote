@@ -66,8 +66,9 @@ export class RemoteService {
       this.onDisconnectCallback = onDisconnect;
     }
 
-    const protocol = tv.remotePort === 3001 ? 'wss' : 'ws';
-    const wsUrl = `${protocol}://${tv.host}:${tv.remotePort}/`;
+    const targetPort = tv.remotePort || tv.pairingPort || 3001;
+    const protocol = targetPort === 3001 ? 'wss' : 'ws';
+    const wsUrl = `${protocol}://${tv.host}:${targetPort}/`;
 
     // Retrieve saved client-key if this TV was paired previously
     const savedKey = await StorageService.getClientKey(tv.host);

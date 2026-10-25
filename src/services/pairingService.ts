@@ -46,10 +46,11 @@ export class PairingService {
     this.callbacks = callbacks;
     this.savedClientKey = null;
 
-    const protocol = tv.remotePort === 3001 ? 'wss' : 'ws';
-    const wsUrl = `${protocol}://${tv.host}:${tv.remotePort}/`;
+    const targetPort = tv.pairingPort || tv.remotePort || 3001;
+    const protocol = targetPort === 3001 ? 'wss' : 'ws';
+    const wsUrl = `${protocol}://${tv.host}:${targetPort}/`;
 
-    console.log(`[PairingService] Initiating pairing with TV at ${wsUrl}...`);
+    console.log(`[PairingService] Initiating direct pairing with TV at ${wsUrl}...`);
 
     // 60-second overall pairing timeout
     this.pairingTimeoutTimer = setTimeout(() => {
@@ -58,6 +59,8 @@ export class PairingService {
         message: 'Pairing timed out. The TV took too long to respond.',
       });
     }, 60000);
+
+    let awaitingCodeFallbackTimer: NodeJS.Timeout | null = null;
 
     try {
       const currentWs = new WebSocket(wsUrl);
@@ -98,12 +101,20 @@ export class PairingService {
           console.warn('[PairingService] Error sending registration:', sendErr);
         }
 
-        // Signal that TV is displaying pairing code
-        callbacks.onAwaitingCode(8);
+        // Display code screen once registration is sent (fallback after brief delay)
+        awaitingCodeFallbackTimer = setTimeout(() => {
+          if (this.isPairingInProgress && this.ws === currentWs) {
+            callbacks.onAwaitingCode(8);
+          }
+        }, 1200);
       };
 
       currentWs.onmessage = async (event) => {
         if (this.ws !== currentWs) return;
+        if (awaitingCodeFallbackTimer) {
+          clearTimeout(awaitingCodeFallbackTimer);
+          awaitingCodeFallbackTimer = null;
+        }
         try {
           const msg = JSON.parse(event.data);
           console.log('[PairingService] TV response:', msg);

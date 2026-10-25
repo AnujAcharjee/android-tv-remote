@@ -1,17 +1,41 @@
 /**
  * TV Discovery Service
- * Discovers Android TV / Google TV devices via:
- * 1. Stored paired devices
- * 2. mDNS discovery service (_androidtvremote2._tcp)
- * 3. Subnet / IP port scanner (probing 6467/6466) for networks where mDNS multicast is filtered
- * 4. Manual IP addition
+ * Discovers Smart TVs (LG webOS, Android TV, Google TV) dynamically via:
+ * 1. Stored paired devices from local storage
+ * 2. Real-time port probing on local network without hardcoded IPs
+ * 3. Intelligent protocol auto-detection (LG webOS on 3001, Android TV on 6467/6466)
+ * 4. Manual IP addition with automatic device detection
  */
 
-import { DiscoveredTV, StoredTVDevice } from '../types/device';
+import * as Network from 'expo-network';
+import { DiscoveredTV, StoredTVDevice, TVProtocolType } from '../types/device';
 import { PROTOCOL_CONSTANTS } from '../utils/constants';
 import { StorageService } from '../utils/storage';
 
 export type DiscoveryCallback = (devices: DiscoveredTV[]) => void;
+
+/**
+ * Checks if a specific TCP port is open and actively responding on the target host.
+ * Completed in < 300ms on active ports, times out on closed/unreachable hosts.
+ */
+export async function isPortOpen(host: string, port: number, timeoutMs = 700): Promise<boolean> {
+  const start = Date.now();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    await fetch(`http://${host}:${port}`, { signal: controller.signal });
+    clearTimeout(timer);
+    return true;
+  } catch (err: any) {
+    const duration = Date.now() - start;
+    // Timeout/AbortError means the host/port is not responding
+    if (err?.name === 'AbortError' || err?.name === 'TimeoutError' || duration >= timeoutMs - 50) {
+      return false;
+    }
+    // Any immediate socket response / TLS alert / reset (< timeout) indicates an active listening port
+    return true;
+  }
+}
 
 export class DiscoveryService {
   private static discoveredMap: Map<string, DiscoveredTV> = new Map();
@@ -42,8 +66,9 @@ export class DiscoveryService {
           id: item.id,
           name: item.name,
           host: item.host,
-          pairingPort: item.pairingPort || PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT,
-          remotePort: item.remotePort || PROTOCOL_CONSTANTS.DEFAULT_REMOTE_PORT,
+          pairingPort: item.pairingPort || (item.protocolType === 'webos' ? 3001 : PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT),
+          remotePort: item.remotePort || (item.protocolType === 'webos' ? 3001 : PROTOCOL_CONSTANTS.DEFAULT_REMOTE_PORT),
+          protocolType: item.protocolType || (item.pairingPort === 3001 || item.remotePort === 3001 ? 'webos' : 'androidtv'),
           isPaired: true,
           lastSeen: item.pairedAt,
         });
@@ -57,7 +82,51 @@ export class DiscoveryService {
   }
 
   /**
-   * Initiates local network discovery
+   * Intelligently detects whether a target TV IP is an LG webOS TV or Android/Google TV
+   */
+  public static async detectTVType(host: string): Promise<{
+    protocolType: TVProtocolType;
+    pairingPort: number;
+    remotePort: number;
+    suggestedName: string;
+  }> {
+    const cleanHost = host.trim();
+
+    // Check LG webOS TV (port 3001) and Android TV (port 6467) in parallel
+    const [isWebOS, isAndroidTV] = await Promise.all([
+      isPortOpen(cleanHost, 3001, 1500),
+      isPortOpen(cleanHost, PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT, 1500),
+    ]);
+
+    if (isWebOS) {
+      return {
+        protocolType: 'webos',
+        pairingPort: 3001,
+        remotePort: 3001,
+        suggestedName: `LG Smart TV (${cleanHost})`,
+      };
+    }
+
+    if (isAndroidTV) {
+      return {
+        protocolType: 'androidtv',
+        pairingPort: PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT,
+        remotePort: PROTOCOL_CONSTANTS.DEFAULT_REMOTE_PORT,
+        suggestedName: `Android TV (${cleanHost})`,
+      };
+    }
+
+    // Default to webOS port 3001 if unknown
+    return {
+      protocolType: 'auto',
+      pairingPort: 3001,
+      remotePort: 3001,
+      suggestedName: `Smart TV (${cleanHost})`,
+    };
+  }
+
+  /**
+   * Initiates dynamic local network discovery without hardcoded IPs
    */
   public static async startDiscovery(): Promise<void> {
     if (this.isScanning) return;
@@ -66,35 +135,51 @@ export class DiscoveryService {
     await this.loadSavedDevices();
 
     try {
-      // In mobile environments without root mDNS access or with router isolation,
-      // probe common local subnet hosts for open Android TV ports 6467 / 6466
-      await this.probeCommonSubnets();
+      await this.scanActiveDevices();
     } catch (e) {
-      console.warn('Discovery scan error:', e);
+      console.warn('[DiscoveryService] Scan error:', e);
     } finally {
       this.isScanning = false;
+      this.notifyListeners();
     }
   }
 
   /**
-   * Adds or updates a manually entered TV IP address
+   * Adds or updates a manually entered TV IP address with automatic protocol & port detection
    */
   public static async addManualDevice(
     host: string,
-    name: string = 'Android TV'
+    name?: string,
+    forcedPort?: number
   ): Promise<DiscoveredTV> {
     const cleanHost = host.trim();
-    const id = `manual_${cleanHost.replace(/\./g, '_')}`;
+    const id = `tv_${cleanHost.replace(/[^a-zA-Z0-9_]/g, '_')}`;
 
     const pairedList = await StorageService.getPairedDevices();
     const isPaired = pairedList.some((d) => d.host === cleanHost || d.id === id);
 
+    let pairingPort = forcedPort || 3001;
+    let remotePort = forcedPort || 3001;
+    let protocolType: TVProtocolType = 'webos';
+    let displayName = name?.trim() || `Smart TV (${cleanHost})`;
+
+    if (!forcedPort) {
+      const detected = await this.detectTVType(cleanHost);
+      pairingPort = detected.pairingPort;
+      remotePort = detected.remotePort;
+      protocolType = detected.protocolType;
+      if (!name) {
+        displayName = detected.suggestedName;
+      }
+    }
+
     const device: DiscoveredTV = {
       id,
-      name: name || `Android TV (${cleanHost})`,
+      name: displayName,
       host: cleanHost,
-      pairingPort: PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT,
-      remotePort: PROTOCOL_CONSTANTS.DEFAULT_REMOTE_PORT,
+      pairingPort,
+      remotePort,
+      protocolType,
       isPaired,
       lastSeen: Date.now(),
     };
@@ -105,39 +190,121 @@ export class DiscoveryService {
   }
 
   /**
-   * Probes known and common gateway subnet IP ranges for Android TV ports
+   * Probes known paired devices and scans the local Wi-Fi subnet for any active TVs
    */
-  private static async probeCommonSubnets(): Promise<void> {
+  private static async scanActiveDevices(): Promise<void> {
     const paired = await StorageService.getPairedDevices();
-    for (const dev of paired) {
-      if (!this.discoveredMap.has(dev.id)) {
-        this.discoveredMap.set(dev.id, {
-          id: dev.id,
-          name: dev.name,
-          host: dev.host,
-          pairingPort: dev.pairingPort,
-          remotePort: dev.remotePort,
-          isPaired: true,
-          lastSeen: Date.now(),
-        });
+
+    // 1. Verify and update connectivity for all saved devices first
+    await Promise.all(
+      paired.map(async (dev) => {
+        const isOpen = await isPortOpen(dev.host, dev.remotePort || dev.pairingPort || 3001, 800);
+        if (isOpen) {
+          this.discoveredMap.set(dev.id, {
+            id: dev.id,
+            name: dev.name,
+            host: dev.host,
+            pairingPort: dev.pairingPort,
+            remotePort: dev.remotePort,
+            protocolType: dev.protocolType || (dev.pairingPort === 3001 ? 'webos' : 'androidtv'),
+            isPaired: true,
+            lastSeen: Date.now(),
+          });
+          this.notifyListeners();
+        }
+      })
+    );
+
+    // 2. Discover local subnet dynamically via expo-network
+    const candidateSubnets = new Set<string>();
+
+    try {
+      const myIp = await Network.getIpAddressAsync();
+      if (myIp && myIp.includes('.')) {
+        const parts = myIp.split('.');
+        if (parts.length === 4) {
+          candidateSubnets.add(`${parts[0]}.${parts[1]}.${parts[2]}`);
+        }
+      }
+    } catch {
+      // Ignore if network permission or environment not available
+    }
+
+    // Add subnets from previously saved devices
+    paired.forEach((p) => {
+      const parts = p.host.split('.');
+      if (parts.length === 4) {
+        candidateSubnets.add(`${parts[0]}.${parts[1]}.${parts[2]}`);
+      }
+    });
+
+    // Default common home router subnets fallback
+    if (candidateSubnets.size === 0) {
+      candidateSubnets.add('192.168.1');
+      candidateSubnets.add('192.168.0');
+      candidateSubnets.add('192.168.29');
+    }
+
+    // 3. Scan candidate subnets across all 1..254 addresses in fast parallel chunks
+    for (const subnet of candidateSubnets) {
+      const hostsToTest: string[] = [];
+      for (let i = 1; i <= 254; i++) {
+        hostsToTest.push(`${subnet}.${i}`);
+      }
+
+      const chunkSize = 35;
+      for (let i = 0; i < hostsToTest.length; i += chunkSize) {
+        const chunk = hostsToTest.slice(i, i + chunkSize);
+        await Promise.all(
+          chunk.map(async (testHost) => {
+            // Test LG webOS (port 3001) and Android TV (port 6467) concurrently
+            const [hasWebOS, hasAndroidTV] = await Promise.all([
+              isPortOpen(testHost, 3001, 600),
+              isPortOpen(testHost, PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT, 600),
+            ]);
+
+            if (hasWebOS) {
+              const id = `tv_${testHost.replace(/\./g, '_')}`;
+              if (!this.discoveredMap.has(id)) {
+                this.discoveredMap.set(id, {
+                  id,
+                  name: `LG Smart TV (${testHost})`,
+                  host: testHost,
+                  pairingPort: 3001,
+                  remotePort: 3001,
+                  protocolType: 'webos',
+                  isPaired: paired.some((p) => p.host === testHost),
+                  lastSeen: Date.now(),
+                });
+                this.notifyListeners();
+              }
+            } else if (hasAndroidTV) {
+              const id = `tv_${testHost.replace(/\./g, '_')}`;
+              if (!this.discoveredMap.has(id)) {
+                this.discoveredMap.set(id, {
+                  id,
+                  name: `Android TV (${testHost})`,
+                  host: testHost,
+                  pairingPort: PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT,
+                  remotePort: PROTOCOL_CONSTANTS.DEFAULT_REMOTE_PORT,
+                  protocolType: 'androidtv',
+                  isPaired: paired.some((p) => p.host === testHost),
+                  lastSeen: Date.now(),
+                });
+                this.notifyListeners();
+              }
+            }
+          })
+        );
       }
     }
+  }
 
-    // Detect and list actual TV via bridge (Bypasses Android self-signed TLS block)
-    const actualTv: DiscoveredTV = {
-      id: 'actual_smart_tv_33',
-      name: 'Smart TV (Living Room)',
-      host: '192.168.29.120',
-      pairingPort: 3002,
-      remotePort: 3002,
-      isPaired: paired.some((d) => d.id === 'actual_smart_tv_33'),
-      lastSeen: Date.now(),
-    };
-
-    if (!this.discoveredMap.has(actualTv.id)) {
-      this.discoveredMap.set(actualTv.id, actualTv);
-    }
-
+  /**
+   * Forgets a device and removes it from the discovered map
+   */
+  public static removeDevice(id: string): void {
+    this.discoveredMap.delete(id);
     this.notifyListeners();
   }
 
