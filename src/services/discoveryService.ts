@@ -45,10 +45,17 @@ export function probeTVPort(host: string, port: number, timeoutMs = 1200): Promi
         }
       };
 
-      ws.onerror = () => {
+      ws.onerror = (e: any) => {
         if (!finished) {
           finished = true;
           clearTimeout(timer);
+          try { ws?.close(); } catch {}
+          const errorMsg = (e?.message || '').toLowerCase();
+          // In environments without custom CA, an SSL/trust error confirms the TV port is listening
+          if (errorMsg.includes('cert') || errorMsg.includes('ssl') || errorMsg.includes('trust') || errorMsg.includes('handshake') || errorMsg.includes('validator')) {
+            resolve(true);
+            return;
+          }
           resolve(false);
         }
       };
@@ -237,25 +244,20 @@ export class DiscoveryService {
     }
     this.notifyListeners();
 
-    // 1. Verify and update connectivity for all saved devices first
-    await Promise.all(
-      paired.map(async (dev) => {
-        const isOpen = await probeTVPort(dev.host, dev.remotePort || dev.pairingPort || 3001, 1000);
-        if (isOpen) {
-          this.discoveredMap.set(dev.id, {
-            id: dev.id,
-            name: dev.name,
-            host: dev.host,
-            pairingPort: dev.pairingPort,
-            remotePort: dev.remotePort,
-            protocolType: dev.protocolType || (dev.pairingPort === 3001 ? 'webos' : 'androidtv'),
-            isPaired: true,
-            lastSeen: Date.now(),
-          });
-          this.notifyListeners();
-        }
-      })
-    );
+    // 1. Always display previously paired devices
+    paired.forEach((dev) => {
+      this.discoveredMap.set(dev.id, {
+        id: dev.id,
+        name: dev.name,
+        host: dev.host,
+        pairingPort: dev.pairingPort,
+        remotePort: dev.remotePort,
+        protocolType: dev.protocolType || (dev.pairingPort === 3001 ? 'webos' : 'androidtv'),
+        isPaired: true,
+        lastSeen: dev.pairedAt || Date.now(),
+      });
+    });
+    this.notifyListeners();
 
     // 2. Discover local subnet dynamically via expo-network
     const candidateSubnets = new Set<string>();
