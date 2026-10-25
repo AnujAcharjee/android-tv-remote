@@ -21,8 +21,9 @@ A lightweight, responsive, and production-ready Android mobile application built
   - **Netflix** (`netflix://` / `com.netflix.ninja`)
   - **JioHotstar** (`https://www.hotstar.com` / `in.startv.hotstar`)
   - **YouTube** (`vnd.youtube://` / `com.google.android.youtube.tv`)
-- **Phone-to-TV Text Input (IME)**:
-  - Interactive search and text modal sending keystrokes directly into TV input fields.
+- **Integrated Phone-to-TV Search & Text Input (IME)**:
+  - Clean inline search and text bar with a Send button right inside the remote control panel.
+  - Supports typing directly or using your phone's native keyboard voice typing (Google Voice Typing / Siri Dictation) to send queries across any TV application.
 - **Network Resilience & Diagnostics**:
   - Automatic discovery via mDNS (`_androidtvremote2._tcp`).
   - Manual IP connect fallback for Wi-Fi routers with client isolation.
@@ -54,7 +55,7 @@ src/
 │   ├── ShortcutButton.tsx    # Dedicated app launchers (Netflix, Hotstar, YouTube)
 │   ├── ConnectionStatus.tsx  # Top header status badge and TV info
 │   ├── PairingModal.tsx      # 6-character PIN entry dialog
-│   └── TextInputModal.tsx    # Phone-to-TV text injection modal
+│   └── DevicePickerSheet.tsx # Google TV styled bottom sheet for TV switching
 ├── screens/              # Top-level screen views
 │   ├── RemoteScreen.tsx      # Primary remote control panel
 │   ├── ConnectionScreen.tsx  # Discovery list, manual IP connection, pairing status

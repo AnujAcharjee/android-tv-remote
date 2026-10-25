@@ -1,9 +1,9 @@
 /**
  * ConnectionStatus Component
- * Displays the header, connection status pill, active TV name, and settings button.
+ * Displays the centered connection status pill and active TV name in the header.
  */
 
-import { Settings, Wifi, WifiOff } from 'lucide-react-native';
+import { Wifi, WifiOff } from 'lucide-react-native';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useHaptics } from '../hooks/useHaptics';
@@ -13,14 +13,13 @@ import { THEME } from '../utils/constants';
 interface ConnectionStatusProps {
   state: TVConnectionState;
   currentTv: DiscoveredTV | null;
-  onOpenSettings: () => void;
+  onOpenSettings?: () => void;
   onOpenConnections: () => void;
 }
 
 export const ConnectionStatus: React.FC<ConnectionStatusProps> = ({
   state,
   currentTv,
-  onOpenSettings,
   onOpenConnections,
 }) => {
   const { triggerLight } = useHaptics();
@@ -72,7 +71,7 @@ export const ConnectionStatus: React.FC<ConnectionStatusProps> = ({
 
   return (
     <View style={styles.header}>
-      {/* Connection status pill */}
+      {/* Connection status pill centered in both X and Y */}
       <Pressable
         onPress={() => {
           triggerLight();
@@ -91,22 +90,6 @@ export const ConnectionStatus: React.FC<ConnectionStatusProps> = ({
           {status.label}
         </Text>
       </Pressable>
-
-      {/* Settings button */}
-      <Pressable
-        onPress={() => {
-          triggerLight();
-          onOpenSettings();
-        }}
-        accessibilityLabel="Settings"
-        accessibilityRole="button"
-        style={({ pressed }) => [
-          styles.iconButton,
-          { opacity: pressed ? 0.7 : 1 },
-        ]}
-      >
-        <Settings size={20} color={THEME.colors.textSecondary} />
-      </Pressable>
     </View>
   );
 };
@@ -115,22 +98,23 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: THEME.colors.surfaceBorder,
+    width: '100%',
   },
   statusPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: THEME.borderRadius.full,
     backgroundColor: THEME.colors.surface,
     borderWidth: 1,
     gap: 8,
-    maxWidth: 260,
+    maxWidth: 280,
   },
   statusDot: {
     width: 7,
@@ -140,15 +124,5 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 13,
     fontWeight: '600',
-  },
-  iconButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: THEME.colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: THEME.colors.surfaceBorder,
   },
 });

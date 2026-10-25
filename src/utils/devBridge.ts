@@ -31,15 +31,7 @@ export function getDevBridgeHost(): string | null {
   // 3. Extract packager IP from React Native runtime bundle URL
   try {
     const { NativeModules } = require('react-native');
-    let scriptURL = NativeModules?.SourceCode?.scriptURL;
-
-    if (!scriptURL) {
-      try {
-        const TurboModuleRegistry = require('react-native/Libraries/TurboModule/TurboModuleRegistry');
-        const SourceCode = TurboModuleRegistry?.get?.('SourceCode');
-        scriptURL = SourceCode?.getConstants?.()?.scriptURL;
-      } catch {}
-    }
+    const scriptURL = NativeModules?.SourceCode?.scriptURL;
 
     if (scriptURL) {
       const match = String(scriptURL).match(/[a-zA-Z0-9]+:\/\/([^:\/]+)/);

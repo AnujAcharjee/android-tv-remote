@@ -21,14 +21,58 @@ const FULL_PERMISSIONS = [
 export class RemoteService {
   private activeTv: DiscoveredTV | null = null;
   private ws: WebSocket | null = null;
+  private pointerWs: WebSocket | null = null;
+  private isPointerOpen: boolean = false;
   private isConnected: boolean = false;
   private reqCounter: number = 1;
   private onDisconnectCallback: (() => void) | null = null;
   private commandQueue: any[] = [];
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private isMuted: boolean = false;
+  private isImeSubscribed: boolean = false;
 
   private connectionPromise: Promise<boolean> | null = null;
+
+  private ensureImeSubscribed(): void {
+    if (!this.isImeSubscribed && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.isImeSubscribed = true;
+      this.sendRequest('ssap://com.webos.service.ime/registerRemoteKeyboard', { subscribe: true });
+    }
+  }
+
+  private requestPointerSocket(): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.sendRequest('ssap://com.webos.service.networkinput/getPointerInputSocket');
+    }
+  }
+
+  private initPointerSocket(socketPath: string): void {
+    if (this.pointerWs && this.pointerWs.readyState === WebSocket.OPEN) return;
+
+    console.log('[RemoteService] Connecting to direct pointer input socket:', socketPath);
+    try {
+      const pWs = new WebSocket(socketPath);
+      this.pointerWs = pWs;
+
+      pWs.onopen = () => {
+        console.log('[RemoteService] Direct pointer/D-Pad socket connected!');
+        this.isPointerOpen = true;
+      };
+
+      pWs.onclose = () => {
+        console.log('[RemoteService] Direct pointer socket closed');
+        this.isPointerOpen = false;
+        this.pointerWs = null;
+      };
+
+      pWs.onerror = (e) => {
+        console.warn('[RemoteService] Direct pointer socket error:', e);
+        this.isPointerOpen = false;
+      };
+    } catch (e) {
+      console.warn('[RemoteService] Failed to initialize pointer socket:', e);
+    }
+  }
 
   /**
    * Connects to the TV's remote control service
@@ -156,16 +200,25 @@ export class RemoteService {
                 this.isMuted = Boolean(data.payload.muteStatus);
               }
 
+              // Handle pointer socket path if returned by TV
+              if (data.payload?.socketPath) {
+                this.initPointerSocket(data.payload.socketPath);
+              }
+
               // If TV accepted registration and emitted client-key:
               if (data.type === 'registered' && data.payload && data.payload['client-key']) {
                 const newKey = data.payload['client-key'];
                 console.log('[RemoteService] TV registered successfully! Client-key:', newKey);
                 await StorageService.setClientKey(tv.host, newKey);
                 this.isConnected = true;
+                this.ensureImeSubscribed();
+                this.requestPointerSocket();
                 this.startHeartbeat();
                 markResolved(true);
-              } else if (data.type === 'response' && data.payload && data.payload.returnValue && savedKey) {
+              } else if (!resolved && data.type === 'response' && data.payload?.returnValue && savedKey) {
                 this.isConnected = true;
+                this.ensureImeSubscribed();
+                this.requestPointerSocket();
                 this.startHeartbeat();
                 markResolved(true);
               }
@@ -247,6 +300,12 @@ export class RemoteService {
    * Sends button press event to TV pointer / D-pad socket
    */
   public sendButton(name: string): boolean {
+    if (this.pointerWs && this.isPointerOpen && this.pointerWs.readyState === WebSocket.OPEN) {
+      console.log(`[RemoteService] Sending button to direct pointer socket: ${name}`);
+      this.pointerWs.send(`type:button\nname:${name}\n\n`);
+      return true;
+    }
+
     const packet = { type: 'button', name };
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       console.log(`[RemoteService] Sending button: ${name}`);
@@ -255,6 +314,42 @@ export class RemoteService {
     } else if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
       this.commandQueue.push(packet);
       return true;
+    }
+    return false;
+  }
+
+  /**
+   * Sends raw text directly to pointer / keyboard socket
+   */
+  public sendPointerText(text: string): boolean {
+    if (this.pointerWs && this.isPointerOpen && this.pointerWs.readyState === WebSocket.OPEN) {
+      console.log(`[RemoteService] Sending text to direct pointer socket: ${text}`);
+      this.pointerWs.send(`type:text\ntext:${text}\n\n`);
+      return true;
+    }
+
+    const packet = { type: 'text', text };
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      console.log(`[RemoteService] Sending text over control session: ${text}`);
+      this.ws.send(JSON.stringify(packet));
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Sends individual character key event over the remote protocol
+   */
+  public sendCharKey(char: string): boolean {
+    if (char === ' ') {
+      return this.sendButton('SPACE');
+    }
+    const upper = char.toUpperCase();
+    if ((upper >= 'A' && upper <= 'Z') || (upper >= '0' && upper <= '9')) {
+      return this.sendButton(upper);
+    }
+    if (char === '\n' || char === '\r') {
+      return this.sendButton('ENTER');
     }
     return false;
   }
@@ -385,43 +480,134 @@ export class RemoteService {
   }
 
   /**
-   * Directly opens YouTube on TV searching for the given query
+   * Universal text search & entry:
+   * Types text into the active input box across ANY app on TV, then submits with Enter.
+   * Works reliably for both native apps (YouTube, Netflix) and custom on-screen keyboard apps (Disney+ Hotstar).
    */
-  public async searchYouTube(query: string): Promise<boolean> {
-    const cleanQuery = query.trim();
-    if (!cleanQuery) return false;
+  public async sendTextAndSubmit(text: string): Promise<boolean> {
+    const cleanText = text.trim();
+    if (!cleanText) return false;
 
-    console.log(`[RemoteService] Opening YouTube on TV searching for "${cleanQuery}"...`);
-    return this.sendRequest('ssap://system.launcher/open', {
-      id: 'youtube.leanback.v4',
-      contentId: `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQuery)}`,
-    });
+    console.log(`[RemoteService] Sending text/search "${cleanText}" to active TV app...`);
+    this.ensureImeSubscribed();
+
+    // 1. Send via hybrid input (IME + Pointer Text + Character Keys) into active app
+    await this.sendText(cleanText);
+
+    // 2. Submit with Enter on both IME and hardware ENTER button
+    setTimeout(() => {
+      this.sendEnterKey();
+    }, 200);
+
+    return true;
   }
 
   /**
-   * Sends text input to the active input/search field on the TV (Hotstar, YouTube, Netflix, system search)
+   * Universal TV Search:
+   * Triggers the TV's global universal search across ALL apps, channels, and media
+   */
+  public async searchUniversal(query: string): Promise<boolean> {
+    const cleanQuery = query.trim();
+    if (!cleanQuery) return false;
+
+    console.log(`[RemoteService] Triggering Universal TV search for "${cleanQuery}"...`);
+    this.sendRequest('ssap://system.launcher/open', {
+      id: 'com.webos.app.discovery',
+      params: { query: cleanQuery, keyword: cleanQuery },
+    });
+    this.ensureImeSubscribed();
+    setTimeout(() => {
+      this.sendText(cleanQuery);
+      setTimeout(() => {
+        this.sendEnterKey();
+      }, 300);
+    }, 350);
+
+    return true;
+  }
+
+  /**
+   * Dynamic Search in specific apps (YouTube, Netflix, Hotstar, Prime, etc.)
+   */
+  public async searchInApp(appId: string, query: string): Promise<boolean> {
+    const cleanQuery = query.trim();
+    if (!cleanQuery) return false;
+
+    console.log(`[RemoteService] Dynamic search in app "${appId}" for "${cleanQuery}"...`);
+
+    const lowerId = appId.toLowerCase();
+    if (lowerId.includes('youtube')) {
+      return this.sendRequest('ssap://system.launcher/open', {
+        id: 'youtube.leanback.v4',
+        contentId: `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQuery)}`,
+      });
+    }
+
+    if (lowerId.includes('netflix')) {
+      return this.sendRequest('ssap://system.launcher/open', {
+        id: 'netflix',
+        contentId: `https://www.netflix.com/search?q=${encodeURIComponent(cleanQuery)}`,
+      });
+    }
+
+    // Default: Open the app and type the text into its search
+    await this.sendRequest('ssap://system.launcher/open', { id: appId });
+    setTimeout(() => {
+      this.sendTextAndSubmit(cleanQuery);
+    }, 1200);
+
+    return true;
+  }
+
+  /**
+   * Sends text input to the active input/search field on the TV (Hotstar, YouTube, Netflix, system search).
+   * Uses hybrid dispatch:
+   * 1. webOS system IME insertText (for native input fields)
+   * 2. Pointer socket raw text command (for webOS input widgets)
+   * 3. Character key events stream (for apps with custom on-screen keyboards like Disney+ Hotstar)
    */
   public async sendText(text: string): Promise<boolean> {
     if (!this.isConnected) {
       throw new Error('Not connected to TV');
     }
 
-    console.log(`[RemoteService] Sending text "${text}" to TV via webOS IME...`);
-    return this.sendRequest('ssap://com.webos.service.ime/insertText', { text, replace: 0 });
+    const cleanText = text.trim();
+    if (!cleanText) return false;
+
+    console.log(`[RemoteService] Sending text "${cleanText}" to TV (IME + Pointer + Keys)...`);
+    this.ensureImeSubscribed();
+
+    // 1. Send via OS IME for native input fields
+    this.sendRequest('ssap://com.webos.service.ime/insertText', { text: cleanText, replace: 0 });
+
+    // 2. Send via pointer socket text protocol
+    this.sendPointerText(cleanText);
+
+    // 3. Stream character key events for apps with custom on-screen keyboard listeners
+    for (const char of cleanText) {
+      this.sendCharKey(char);
+      await new Promise((resolve) => setTimeout(resolve, 35));
+    }
+
+    return true;
   }
 
   /**
-   * Submits active text input (Enter / Search)
+   * Submits active text input (both IME Enter and hardware ENTER button)
    */
   public async sendEnterKey(): Promise<boolean> {
-    this.sendRequest('ssap://com.webos.service.ime/sendEnterKey');
-    return this.sendButton('ENTER');
+    console.log('[RemoteService] Submitting text with IME Enter and Hardware ENTER');
+    this.sendButton('ENTER');
+    return this.sendRequest('ssap://com.webos.service.ime/sendEnterKey');
   }
 
   /**
    * Deletes characters from the active input field
    */
   public async deleteCharacters(count: number = 1): Promise<boolean> {
+    for (let i = 0; i < count; i++) {
+      this.sendButton('BACKSPACE');
+    }
     return this.sendRequest('ssap://com.webos.service.ime/deleteCharacters', { count });
   }
 
@@ -451,10 +637,19 @@ export class RemoteService {
   }
 
   /**
-   * Disconnects and cleans up WebSocket
+   * Disconnects and cleans up WebSockets
    */
   public disconnect(): void {
     this.stopHeartbeat();
+    if (this.pointerWs) {
+      try {
+        this.pointerWs.close();
+      } catch {
+        // Ignore
+      }
+      this.pointerWs = null;
+      this.isPointerOpen = false;
+    }
     if (this.ws) {
       try {
         this.ws.close();
@@ -464,6 +659,7 @@ export class RemoteService {
       this.ws = null;
     }
     this.isConnected = false;
+    this.isImeSubscribed = false;
     this.activeTv = null;
     if (this.onDisconnectCallback) {
       this.onDisconnectCallback();

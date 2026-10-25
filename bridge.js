@@ -6,9 +6,6 @@
  */
 
 const http = require('http');
-const { execFile } = require('child_process');
-const fs = require('fs');
-const path = require('path');
 const WebSocket = require('ws');
 
 let TV_URL = 'wss://192.168.29.33:3001/';
@@ -16,7 +13,6 @@ const PORT = 3002;
 let currentClientKey = 'a80668eb53a8433dbd4cf96bcd37ceeb';
 const DEFAULT_CLIENT_KEY = 'a80668eb53a8433dbd4cf96bcd37ceeb';
 let activeTvTarget = '192.168.29.33:3001';
-const RECOGNIZE_SCRIPT = path.join(__dirname, 'scripts', 'recognize.ps1');
 
 const fullPermissions = [
   'LAUNCH', 'LAUNCH_WEBAPP', 'APP_TO_APP', 'CLOSE', 'TEST_OPEN', 'TEST_PROTECTED',
@@ -34,80 +30,15 @@ let isPointerOpen = false;
 let lastMuteStatus = false;
 const pendingMessages = [];
 
-// HTTP Server handling Voice Search Transcription & Health
+// Lightweight HTTP Server for bridge health checks
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(200);
     res.end();
-    return;
-  }
-
-  if (req.url === '/transcribe' && req.method === 'POST') {
-    const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => {
-      try {
-        const rawBuffer = Buffer.concat(chunks);
-        let audioBuffer = rawBuffer;
-
-        // Support JSON payload with audioBase64
-        try {
-          const parsed = JSON.parse(rawBuffer.toString('utf8'));
-          if (parsed.audioBase64) {
-            audioBuffer = Buffer.from(parsed.audioBase64, 'base64');
-          }
-        } catch {}
-
-        let ext = '.wav';
-        if (audioBuffer.length >= 8 && audioBuffer.slice(4, 8).toString('utf8') === 'ftyp') {
-          ext = '.m4a';
-        } else if (audioBuffer.length >= 4 && audioBuffer.slice(0, 4).toString('utf8') === 'OggS') {
-          ext = '.ogg';
-        }
-        const tempFile = path.join(__dirname, `temp_voice_${Date.now()}${ext}`);
-        fs.writeFileSync(tempFile, audioBuffer);
-        console.log(`[Bridge Voice] Audio received (${audioBuffer.length} bytes, format: ${ext}), transcribing speech...`);
-
-        const psArgs = [
-          '-NoProfile',
-          '-ExecutionPolicy', 'Bypass',
-          '-File', RECOGNIZE_SCRIPT,
-          '-AudioPath', tempFile,
-        ];
-
-        execFile('powershell', psArgs, { encoding: 'utf8', timeout: 20000 }, (error, stdout, stderr) => {
-          try {
-            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-          } catch {}
-
-          if (error) {
-            console.warn('[Bridge Voice] Recognition error:', error.message);
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: false, error: error.message }));
-            return;
-          }
-
-          const rawOutput = (stdout || '').trim();
-          console.log('[Bridge Voice] Output:', rawOutput);
-          try {
-            const result = JSON.parse(rawOutput);
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(result));
-          } catch {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: Boolean(rawOutput), text: rawOutput }));
-          }
-        });
-      } catch (err) {
-        console.warn('[Bridge Voice] Handler error:', err.message);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
     return;
   }
 
@@ -117,7 +48,7 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocket.Server({ server });
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Bridge] TV Relay Bridge & Voice Server running on ws://0.0.0.0:${PORT}`);
+  console.log(`[Bridge] TV Relay Bridge running on ws://0.0.0.0:${PORT}`);
 });
 
 function initPointerSocket(socketPath) {
@@ -202,16 +133,25 @@ function getOrCreateTvConnection() {
     try {
       const parsed = JSON.parse(text);
       if (parsed.type === 'registered' || (parsed.type === 'response' && parsed.id === 'bridge_reg')) {
-        console.log('[Bridge] TV registered! Requesting pointer socket...');
+        console.log('[Bridge] TV registered! Requesting pointer socket & registering remote keyboard...');
         tvWs.send(JSON.stringify({
           id: 'bridge_get_pointer',
           type: 'request',
           uri: 'ssap://com.webos.service.networkinput/getPointerInputSocket'
         }));
+        tvWs.send(JSON.stringify({
+          id: 'bridge_sub_ime',
+          type: 'subscribe',
+          uri: 'ssap://com.webos.service.ime/registerRemoteKeyboard'
+        }));
       }
 
       if (parsed.id === 'bridge_get_pointer' && parsed.payload && parsed.payload.socketPath) {
         initPointerSocket(parsed.payload.socketPath);
+      }
+
+      if (parsed.uri === 'ssap://com.webos.service.ime/registerRemoteKeyboard') {
+        console.log('[Bridge] TV IME Keyboard Focus:', parsed.payload);
       }
 
       if (parsed.payload?.volumeStatus?.muteStatus !== undefined) {
@@ -347,6 +287,16 @@ wss.on('connection', (clientWs, req) => {
               uri: 'ssap://com.webos.service.networkinput/getPointerInputSocket'
             }));
           }
+        }
+      }
+
+      // Dedicated text typing packet for pointer/input socket
+      if (data.type === 'text' && data.text !== undefined) {
+        const textCommand = `type:text\ntext:${data.text}\n\n`;
+        console.log(`[Bridge] Text -> TV Pointer: ${data.text}`);
+        if (pointerWs && isPointerOpen && pointerWs.readyState === WebSocket.OPEN) {
+          pointerWs.send(textCommand);
+          return;
         }
       }
     } catch {

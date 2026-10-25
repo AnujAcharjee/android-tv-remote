@@ -1,29 +1,34 @@
 /**
  * RemoteScreen - Primary TV Remote Control Panel
  * Google TV inspired clean, modern dark theme layout.
+ * Features an integrated TV Search & Text Entry box with Send action.
  */
 
 import {
   FastForward,
   Home,
-  Keyboard,
   Menu,
-  Mic,
   Pause,
   Play,
   Power,
   RotateCcw,
+  Search,
+  Send,
   Undo2,
   Volume1,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react-native';
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Alert,
+  Keyboard as RNKeyboard,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -32,12 +37,9 @@ import { DevicePickerSheet } from '../components/DevicePickerSheet';
 import { DirectionPad } from '../components/DirectionPad';
 import { RemoteButton } from '../components/RemoteButton';
 import { ShortcutButton } from '../components/ShortcutButton';
-import { TextInputModal } from '../components/TextInputModal';
-import { VoiceSearchModal } from '../components/VoiceSearchModal';
 import { useTVConnection } from '../hooks/useTVConnection';
 import { AppLauncherService } from '../services/appLauncher';
 import { remoteService } from '../services/remoteService';
-import { TextInputService } from '../services/textInputService';
 import { DiscoveredTV } from '../types/device';
 import { Direction, KeyCode, StreamingAppId } from '../types/remote';
 import { THEME } from '../utils/constants';
@@ -61,8 +63,10 @@ export const RemoteScreen: React.FC<RemoteScreenProps> = ({
     disconnect,
   } = useTVConnection();
 
-  const [textInputVisible, setTextInputVisible] = useState(false);
-  const [voiceModalVisible, setVoiceModalVisible] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [sentFeedback, setSentFeedback] = useState<string | null>(null);
+  const searchInputRef = useRef<any>(null);
+
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
   const [showDevicePicker, setShowDevicePicker] = useState(false);
@@ -113,8 +117,29 @@ export const RemoteScreen: React.FC<RemoteScreenProps> = ({
     }
   };
 
-  const handleSendText = async (text: string) => {
-    return TextInputService.sendText(text);
+  const handleSendSearch = async (queryOverride?: string) => {
+    const query = (queryOverride || searchText).trim();
+    if (!query) return;
+
+    if (!isConnected) {
+      Alert.alert(
+        'TV Not Connected',
+        'Connect to your TV before searching or typing.',
+        [{ text: 'Connect', onPress: onOpenConnections }, { text: 'OK' }]
+      );
+      return;
+    }
+
+    RNKeyboard.dismiss();
+    try {
+      setSentFeedback(`Sent to TV: "${query}"`);
+      setTimeout(() => setSentFeedback(null), 3000);
+      setSearchText('');
+      await remoteService.sendTextAndSubmit(query);
+    } catch (err: any) {
+      console.warn('Send search error:', err);
+      Alert.alert('Search Error', err?.message || 'Could not send text to TV');
+    }
   };
 
   return (
@@ -129,32 +154,21 @@ export const RemoteScreen: React.FC<RemoteScreenProps> = ({
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
-        {/* TOP BAR: POWER, RECONNECT, KEYBOARD */}
+        {/* TOP UTILITY ROW: POWER & SETTINGS / RECONNECT */}
         <View style={styles.topUtilityRow}>
           <RemoteButton
-            icon={<Power size={22} color={THEME.colors.accentRed} />}
+            icon={<Power size={20} color={THEME.colors.accentRed} />}
             onPress={() => handleKey(KeyCode.POWER)}
             accessibilityLabel="Power"
             size="sm"
           />
 
-          <View style={styles.centerUtilityGroup}>
-            <RemoteButton
-              icon={<Mic size={20} color={THEME.colors.primary} />}
-              onPress={() => setVoiceModalVisible(true)}
-              accessibilityLabel="Voice Search"
-              size="sm"
-            />
-            <RemoteButton
-              icon={<Keyboard size={20} color={THEME.colors.textPrimary} />}
-              onPress={() => setTextInputVisible(true)}
-              accessibilityLabel="Open Keyboard"
-              size="sm"
-            />
+          <View style={styles.rightUtilityGroup}>
             {isConnected ? (
               <RemoteButton
-                icon={<RotateCcw size={18} color={THEME.colors.textSecondary} />}
+                icon={<RotateCcw size={16} color={THEME.colors.textSecondary} />}
                 onPress={() => disconnect()}
                 accessibilityLabel="Disconnect"
                 size="sm"
@@ -253,6 +267,56 @@ export const RemoteScreen: React.FC<RemoteScreenProps> = ({
           </View>
         </View>
 
+        {/* INLINE TV SEARCH & TEXT ENTRY (Preserved for future use)
+        <View style={styles.searchSection}>
+          <Text style={styles.sectionHeader}>TV SEARCH & TEXT INPUT</Text>
+          <View style={styles.searchBarContainer}>
+            <Search size={18} color={THEME.colors.primary} style={styles.searchIcon} />
+            <TextInput
+              ref={searchInputRef}
+              style={styles.searchInput}
+              placeholder="Search or type on TV..."
+              placeholderTextColor={THEME.colors.textMuted}
+              value={searchText}
+              onChangeText={setSearchText}
+              onSubmitEditing={() => handleSendSearch()}
+              returnKeyType="search"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            {searchText.length > 0 ? (
+              <TouchableOpacity
+                onPress={() => setSearchText('')}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={styles.clearBtn}
+              >
+                <X size={16} color={THEME.colors.textMuted} />
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity
+              style={[
+                styles.sendBtn,
+                Boolean(searchText.trim()) && styles.sendBtnActive,
+              ]}
+              onPress={() => handleSendSearch()}
+              disabled={!searchText.trim()}
+              accessibilityLabel="Send to TV"
+            >
+              <Send
+                size={16}
+                color={searchText.trim() ? '#FFFFFF' : THEME.colors.textMuted}
+              />
+            </TouchableOpacity>
+          </View>
+
+          {sentFeedback ? (
+            <View style={styles.feedbackBadge}>
+              <Text style={styles.feedbackText}>{sentFeedback}</Text>
+            </View>
+          ) : null}
+        </View>
+        */}
+
         {/* DEDICATED STREAMING APP SHORTCUTS */}
         <View style={styles.shortcutsSection}>
           <Text style={styles.sectionHeader}>STREAMING SHORTCUTS</Text>
@@ -263,20 +327,6 @@ export const RemoteScreen: React.FC<RemoteScreenProps> = ({
           </View>
         </View>
       </ScrollView>
-
-      {/* TEXT INPUT MODAL */}
-      <TextInputModal
-        visible={textInputVisible}
-        onSendText={handleSendText}
-        onClose={() => setTextInputVisible(false)}
-        onOpenVoice={() => setVoiceModalVisible(true)}
-      />
-
-      {/* VOICE SEARCH MODAL */}
-      <VoiceSearchModal
-        visible={voiceModalVisible}
-        onClose={() => setVoiceModalVisible(false)}
-      />
 
       {/* DEVICE PICKER SHEET (GOOGLE TV STYLE) */}
       <DevicePickerSheet
@@ -302,26 +352,82 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 16,
-    paddingBottom: 24,
+    paddingBottom: 32,
     alignItems: 'center',
   },
   topUtilityRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     width: '100%',
-    paddingVertical: 10,
+    paddingVertical: 8,
     alignItems: 'center',
   },
-  centerUtilityGroup: {
+  rightUtilityGroup: {
     flexDirection: 'row',
-    gap: 12,
+    alignItems: 'center',
+    gap: 10,
+  },
+  searchSection: {
+    width: '100%',
+    marginVertical: 8,
+  },
+  searchBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    height: 52,
+    backgroundColor: THEME.colors.surfaceElevated,
+    borderRadius: 26,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: THEME.colors.surfaceBorder,
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    color: THEME.colors.textPrimary,
+    fontSize: 15,
+    paddingHorizontal: 4,
+    height: '100%',
+  },
+  clearBtn: {
+    padding: 6,
+    marginRight: 4,
+  },
+  sendBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  sendBtnActive: {
+    backgroundColor: THEME.colors.primary,
+  },
+  feedbackBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.35)',
+    borderRadius: 14,
+    paddingVertical: 5,
+    paddingHorizontal: 14,
+    marginTop: 6,
+    alignSelf: 'center',
+  },
+  feedbackText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '600',
   },
   navRow: {
     flexDirection: 'row',
     width: '100%',
     justifyContent: 'space-between',
     gap: 12,
-    marginVertical: 10,
+    marginVertical: 8,
   },
   flexButton: {
     flex: 1,
@@ -334,7 +440,7 @@ const styles = StyleSheet.create({
     padding: 10,
     borderWidth: 1,
     borderColor: THEME.colors.surfaceBorder,
-    marginVertical: 6,
+    marginVertical: 5,
   },
   volumeRow: {
     flexDirection: 'row',
@@ -346,7 +452,7 @@ const styles = StyleSheet.create({
   },
   shortcutsSection: {
     width: '100%',
-    marginTop: 10,
+    marginTop: 8,
   },
   sectionHeader: {
     fontSize: 11,

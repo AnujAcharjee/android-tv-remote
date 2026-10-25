@@ -4,9 +4,10 @@
 This project is a lightweight, responsive, native-capable Android mobile application built with **React Native (Expo)** and **TypeScript** that turns an Android phone into a high-performance remote control for an Android TV or Google TV connected to the same local Wi-Fi network.
 
 ### Key Goals
-- **True Network Remote**: Communicates directly over local Wi-Fi with Android TV / Google TV using the **Android TV Remote v2 Protocol** (mDNS discovery + TLS TCP sockets + Protobuf message payloads).
-- **No Remote Backend**: Fully peer-to-peer / local network; no intermediate cloud servers or external dependencies.
-- **Production-Ready UX**: Minimalist dark theme, responsive D-Pad, haptic feedback, instantaneous key response, dedicated streaming shortcuts (Netflix, JioHotstar, YouTube), and phone-to-TV text input.
+- **True Network Remote**: Communicates directly over local Wi-Fi with Android TV / Google TV / LG webOS TV using peer-to-peer protocols (mDNS / UPnP discovery + native TLS TCP sockets / WebSockets).
+- **100% Standalone Autonomous Operation**: The application MUST run completely autonomously on the phone without requiring ANY PC bridge, relay daemon, or external computer. The PC bridge (`bridge.js`) is strictly a local developer testing aid for Expo Go TLS CA bypass during development. All production / standalone APK builds communicate directly with the TV using `plugins/withSelfSignedTls.js`.
+- **Phone-to-TV Text & Universal Search**: Users enter search queries directly via their phone's software keyboard (including native mobile keyboard voice typing such as Google Voice Typing or Siri Dictation) and send text straight to the active input box of ANY TV application (YouTube, Netflix, Prime Video, Hotstar, Web Browser) as well as triggering the TV's Universal Search.
+- **Production-Ready UX**: Minimalist dark theme, responsive D-Pad, haptic feedback, instantaneous key response, dedicated streaming shortcuts (Netflix, JioHotstar, YouTube), and centered phone-to-TV text search bar.
 - **Expo Prebuild / Development Build**: Compatible with Expo Config Plugins and native modules (such as `react-native-tcp-socket`, `@react-native-community/netinfo`, `react-native-zeroconf` or native discovery, and cryptographic primitives).
 
 ---
@@ -86,7 +87,7 @@ src/
 │   ├── ShortcutButton.tsx    # App launcher button (Netflix, Hotstar, YouTube)
 │   ├── ConnectionStatus.tsx  # Header connection badge and TV details
 │   ├── PairingModal.tsx      # PIN entry dialog when TV requests pairing
-│   └── TextInputModal.tsx    # Keyboard input dialog sending strings to TV
+│   └── DevicePickerSheet.tsx # Google TV styled bottom sheet for TV switching
 ├── screens/              # Top-level screen views
 │   ├── RemoteScreen.tsx      # Primary remote control panel
 │   ├── ConnectionScreen.tsx  # Discovery list, manual IP connection, pairing status

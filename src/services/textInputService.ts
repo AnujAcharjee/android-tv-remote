@@ -19,10 +19,7 @@ export class TextInputService {
     }
 
     try {
-      await remoteService.sendText(text);
-      setTimeout(() => {
-        remoteService.sendEnterKey();
-      }, 200);
+      await remoteService.sendTextAndSubmit(text);
       return { success: true, message: `Sent to TV: "${text}"` };
     } catch (error: any) {
       return { success: false, message: error?.message || 'Failed to send text to TV' };
