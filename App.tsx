@@ -32,9 +32,7 @@ export default function App() {
     // 1. If currently in the pairing / prompt / PIN entry phase:
     if (
       connectionState === 'awaitingPrompt' ||
-      connectionState === 'awaitingCode' ||
-      connectionState === 'pairing' ||
-      (connectionState === 'failed' && currentTv)
+      connectionState === 'awaitingCode'
     ) {
       return (
         <PairingScreen

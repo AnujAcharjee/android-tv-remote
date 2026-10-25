@@ -82,41 +82,8 @@ export const PairingScreen: React.FC<PairingScreenProps> = ({
         </View>
 
         <View style={styles.content}>
-          {isAwaitingPrompt ? (
-            /* ON-SCREEN TV PROMPT MODE (Standard for Smart TVs / LG webOS) */
-            <View style={styles.promptContainer}>
-              <View style={styles.tvIconCircle}>
-                <Tv size={42} color={THEME.colors.primary} />
-              </View>
-
-              <Text style={styles.title}>Confirm on your TV</Text>
-              <Text style={styles.instruction}>
-                {`A prompt has appeared on "${tv?.name || 'your TV'}".\nPlease press "Allow" or "Yes" using your TV remote.`}
-              </Text>
-
-              {activeError ? (
-                <View style={styles.errorBanner}>
-                  <AlertCircle size={18} color={THEME.colors.accentRed} />
-                  <Text style={styles.errorText}>{activeError}</Text>
-                </View>
-              ) : null}
-
-              <View style={styles.waitingBadge}>
-                <ActivityIndicator color={THEME.colors.primary} size="small" />
-                <Text style={styles.waitingText}>Waiting for TV confirmation...</Text>
-              </View>
-
-              <View style={styles.actions}>
-                <TouchableOpacity
-                  style={styles.cancelButton}
-                  onPress={onCancel}
-                >
-                  <Text style={styles.cancelText}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          ) : (
-            /* PIN ENTRY MODE (For TVs requiring numeric PIN) */
+          {isAwaitingCode ? (
+            /* PIN ENTRY MODE - ONLY when TV explicitly requests numeric/hex PIN */
             <>
               <Text style={styles.title}>Enter pairing code</Text>
               <Text style={styles.instruction}>
@@ -160,20 +127,6 @@ export const PairingScreen: React.FC<PairingScreenProps> = ({
 
               {/* Action Buttons */}
               <View style={styles.actions}>
-                {isFailed ? (
-                  <TouchableOpacity
-                    style={styles.retryButton}
-                    onPress={() => {
-                      setPin('');
-                      setLocalError(null);
-                      onRetry();
-                    }}
-                    disabled={isPairing}
-                  >
-                    <Text style={styles.retryText}>Retry Pairing</Text>
-                  </TouchableOpacity>
-                ) : null}
-
                 <TouchableOpacity
                   style={[
                     styles.pairButton,
@@ -203,6 +156,67 @@ export const PairingScreen: React.FC<PairingScreenProps> = ({
                 </TouchableOpacity>
               </View>
             </>
+          ) : isFailed ? (
+            /* CONNECTION FAILED VIEW - Clean retry without showing PIN boxes */
+            <View style={styles.promptContainer}>
+              <View style={[styles.tvIconCircle, { backgroundColor: 'rgba(239, 68, 68, 0.12)' }]}>
+                <AlertCircle size={42} color={THEME.colors.accentRed} />
+              </View>
+
+              <Text style={styles.title}>Connection Failed</Text>
+              <Text style={styles.instruction}>
+                {activeError || 'Unable to connect to the TV. Ensure your TV is turned on and connected to the same Wi-Fi network.'}
+              </Text>
+
+              <View style={styles.actions}>
+                <TouchableOpacity
+                  style={styles.retryButton}
+                  onPress={onRetry}
+                >
+                  <Text style={styles.retryText}>Try Again</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={onCancel}
+                >
+                  <Text style={styles.cancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            /* ON-SCREEN TV PROMPT MODE (Standard for Smart TVs / LG webOS) */
+            <View style={styles.promptContainer}>
+              <View style={styles.tvIconCircle}>
+                <Tv size={42} color={THEME.colors.primary} />
+              </View>
+
+              <Text style={styles.title}>Confirm on your TV</Text>
+              <Text style={styles.instruction}>
+                {`A prompt has appeared on "${tv?.name || 'your TV'}".\nPlease press "Allow" or "Yes" using your TV remote.`}
+              </Text>
+
+              {activeError ? (
+                <View style={styles.errorBanner}>
+                  <AlertCircle size={18} color={THEME.colors.accentRed} />
+                  <Text style={styles.errorText}>{activeError}</Text>
+                </View>
+              ) : null}
+
+              <View style={styles.waitingBadge}>
+                <ActivityIndicator color={THEME.colors.primary} size="small" />
+                <Text style={styles.waitingText}>Waiting for TV confirmation...</Text>
+              </View>
+
+              <View style={styles.actions}>
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={onCancel}
+                >
+                  <Text style={styles.cancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
           )}
         </View>
       </KeyboardAvoidingView>
