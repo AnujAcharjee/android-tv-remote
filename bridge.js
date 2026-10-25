@@ -11,9 +11,11 @@ const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 
-const TV_URL = 'wss://192.168.29.33:3001/';
+let TV_URL = 'wss://192.168.29.33:3001/';
 const PORT = 3002;
+let currentClientKey = 'a80668eb53a8433dbd4cf96bcd37ceeb';
 const DEFAULT_CLIENT_KEY = 'a80668eb53a8433dbd4cf96bcd37ceeb';
+let activeTvTarget = '192.168.29.33:3001';
 const RECOGNIZE_SCRIPT = path.join(__dirname, 'scripts', 'recognize.ps1');
 
 const fullPermissions = [
@@ -262,9 +264,49 @@ setInterval(() => {
 // Warm up connection
 getOrCreateTvConnection();
 
-wss.on('connection', (clientWs) => {
+wss.on('connection', (clientWs, req) => {
   console.log('[Bridge] Phone connected to bridge!');
+
+  if (req && req.url) {
+    try {
+      const u = new URL(req.url, 'http://localhost');
+      const target = u.searchParams.get('target');
+      if (target && target !== activeTvTarget) {
+        console.log(`[Bridge] Switching target TV from ${activeTvTarget} to ${target}...`);
+        activeTvTarget = target;
+        TV_URL = `wss://${target}/`;
+        if (tvWs) {
+          try {
+            tvWs.close();
+          } catch {}
+          tvWs = null;
+          isTvOpen = false;
+        }
+        if (pointerWs) {
+          try {
+            pointerWs.close();
+          } catch {}
+          pointerWs = null;
+          isPointerOpen = false;
+        }
+      }
+    } catch {}
+  }
+
   getOrCreateTvConnection();
+
+  // If already authenticated with TV, immediately let phone know so control session starts instantly
+  if (isTvOpen && tvWs && tvWs.readyState === WebSocket.OPEN) {
+    try {
+      clientWs.send(JSON.stringify({
+        type: 'registered',
+        id: 'control_session',
+        payload: {
+          'client-key': currentClientKey || DEFAULT_CLIENT_KEY,
+        },
+      }));
+    } catch {}
+  }
 
   clientWs.on('message', (message) => {
     const text = message.toString();

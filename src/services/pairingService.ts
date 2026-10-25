@@ -5,6 +5,7 @@
  */
 
 import { DiscoveredTV, PairingFailureReason, StoredTVDevice } from '../types/device';
+import { getDevBridgeWebSocketUrl } from '../utils/devBridge';
 import { SecureStorageService } from '../utils/secureStorage';
 import { StorageService } from '../utils/storage';
 
@@ -61,162 +62,191 @@ export class PairingService {
     }, 60000);
 
     let awaitingCodeFallbackTimer: NodeJS.Timeout | null = null;
+    let triedDevFallback = false;
 
-    try {
-      const currentWs = new WebSocket(wsUrl);
-      this.ws = currentWs;
+    const connectSocket = (url: string) => {
+      try {
+        const currentWs = new WebSocket(url);
+        this.ws = currentWs;
 
-      currentWs.onopen = () => {
-        if (this.ws !== currentWs || currentWs.readyState !== WebSocket.OPEN) {
-          return;
-        }
-
-        console.log('[PairingService] WebSocket open. Sending registration with PIN pairing type...');
-
-        const regPayload = {
-          type: 'register',
-          id: 'reg_handshake',
-          payload: {
-            forcePairing: true,
-            pairingType: 'PIN',
-            manifest: {
-              manifestVersion: 1,
-              appVersion: '1.0',
-              signed: {
-                created: '20140509',
-                appId: 'com.lge.test',
-                vendorId: 'com.lge',
-                localizedAppNames: { '': 'TV Remote' },
-                permissions: FULL_PERMISSIONS,
-              },
-              permissions: FULL_PERMISSIONS,
-              signatures: [{ signature: 'dummy', signatureVersion: 1 }],
-            },
-          },
-        };
-
-        try {
-          currentWs.send(JSON.stringify(regPayload));
-        } catch (sendErr) {
-          console.warn('[PairingService] Error sending registration:', sendErr);
-        }
-
-        // Display code screen once registration is sent (fallback after brief delay)
-        awaitingCodeFallbackTimer = setTimeout(() => {
-          if (this.isPairingInProgress && this.ws === currentWs) {
-            callbacks.onAwaitingCode(8);
+        currentWs.onopen = () => {
+          if (this.ws !== currentWs || currentWs.readyState !== WebSocket.OPEN) {
+            return;
           }
-        }, 1200);
-      };
 
-      currentWs.onmessage = async (event) => {
-        if (this.ws !== currentWs) return;
-        if (awaitingCodeFallbackTimer) {
-          clearTimeout(awaitingCodeFallbackTimer);
-          awaitingCodeFallbackTimer = null;
-        }
-        try {
-          const msg = JSON.parse(event.data);
-          console.log('[PairingService] TV response:', msg);
+          console.log(`[PairingService] WebSocket open on ${url}. Sending registration...`);
 
-          // 1. PIN display acknowledgment from TV
-          if (msg.type === 'response' && msg.id === 'reg_handshake') {
-            if (msg.payload && (msg.payload.pairingType === 'PIN' || msg.payload.pairingType === 'PROMPT')) {
+          const regPayload = {
+            type: 'register',
+            id: 'reg_handshake',
+            payload: {
+              forcePairing: true,
+              pairingType: 'PIN',
+              manifest: {
+                manifestVersion: 1,
+                appVersion: '1.0',
+                signed: {
+                  created: '20140509',
+                  appId: 'com.lge.test',
+                  vendorId: 'com.lge',
+                  localizedAppNames: { '': 'TV Remote' },
+                  permissions: FULL_PERMISSIONS,
+                },
+                permissions: FULL_PERMISSIONS,
+                signatures: [{ signature: 'dummy', signatureVersion: 1 }],
+              },
+            },
+          };
+
+          try {
+            currentWs.send(JSON.stringify(regPayload));
+          } catch (sendErr) {
+            console.warn('[PairingService] Error sending registration:', sendErr);
+          }
+
+          // Display code screen once registration is sent (fallback after brief delay)
+          awaitingCodeFallbackTimer = setTimeout(() => {
+            if (this.isPairingInProgress && this.ws === currentWs) {
               callbacks.onAwaitingCode(8);
             }
+          }, 1200);
+        };
+
+        currentWs.onmessage = async (event) => {
+          if (this.ws !== currentWs) return;
+          if (awaitingCodeFallbackTimer) {
+            clearTimeout(awaitingCodeFallbackTimer);
+            awaitingCodeFallbackTimer = null;
           }
+          try {
+            const msg = JSON.parse(event.data);
+            console.log('[PairingService] TV response:', msg);
 
-          // 2. Successful verification from TV
-          if (msg.type === 'registered' && msg.payload && msg.payload['client-key']) {
-            const key = msg.payload['client-key'];
-            console.log('[PairingService] TV accepted PIN! Verified client-key:', key);
-            this.savedClientKey = key;
-
-            // Persist verified credentials securely in hardware Keystore
-            const storedDev: StoredTVDevice = {
-              id: tv.id,
-              name: tv.name,
-              host: tv.host,
-              pairingPort: tv.pairingPort,
-              remotePort: tv.remotePort,
-              pairedAt: Date.now(),
-            };
-            await SecureStorageService.savePairedDevice(storedDev);
-            await SecureStorageService.savePairingCredentials(tv.host, key);
-            await StorageService.setClientKey(tv.host, key);
-            await SecureStorageService.setActiveDeviceId(tv.id);
-
-            tv.isPaired = true;
-            this.cleanupTimers();
-            this.isPairingInProgress = false;
-
-            if (this.codeSubmitResolver) {
-              this.codeSubmitResolver.resolve(true);
-              this.codeSubmitResolver = null;
+            // 1. PIN display acknowledgment from TV
+            if (msg.type === 'response' && msg.id === 'reg_handshake') {
+              if (msg.payload && (msg.payload.pairingType === 'PIN' || msg.payload.pairingType === 'PROMPT')) {
+                callbacks.onAwaitingCode(8);
+              }
             }
 
-            callbacks.onSuccess(tv);
-          }
+            // 2. Successful verification from TV
+            if (msg.type === 'registered' && msg.payload && msg.payload['client-key']) {
+              const key = msg.payload['client-key'];
+              console.log('[PairingService] TV accepted PIN! Verified client-key:', key);
+              this.savedClientKey = key;
 
-          // 3. Error / Rejection from TV during PIN verification
-          if (msg.type === 'error') {
-            const errorStr = (msg.error || '').toLowerCase();
-            let failureReason: PairingFailureReason;
+              // Persist verified credentials securely in hardware Keystore
+              const storedDev: StoredTVDevice = {
+                id: tv.id,
+                name: tv.name,
+                host: tv.host,
+                pairingPort: tv.pairingPort,
+                remotePort: tv.remotePort,
+                pairedAt: Date.now(),
+              };
+              await SecureStorageService.savePairedDevice(storedDev);
+              await SecureStorageService.savePairingCredentials(tv.host, key);
+              await StorageService.setClientKey(tv.host, key);
+              await SecureStorageService.setActiveDeviceId(tv.id);
 
-            if (errorStr.includes('pin') || errorStr.includes('invalid') || errorStr.includes('401') || errorStr.includes('unauthorized')) {
-              failureReason = {
-                code: 'INCORRECT_PIN',
-                message: 'Incorrect PIN code entered. Please check your TV screen.',
-              };
-            } else if (errorStr.includes('expire') || errorStr.includes('timeout')) {
-              failureReason = {
-                code: 'EXPIRED_PIN',
-                message: 'Pairing code has expired. Please search and request a new code.',
-              };
-            } else {
-              failureReason = {
-                code: 'REJECTED',
-                message: msg.error || 'Pairing was rejected by the TV.',
-              };
+              tv.isPaired = true;
+              this.cleanupTimers();
+              this.isPairingInProgress = false;
+
+              if (this.codeSubmitResolver) {
+                this.codeSubmitResolver.resolve(true);
+                this.codeSubmitResolver = null;
+              }
+
+              callbacks.onSuccess(tv);
             }
 
-            if (this.codeSubmitResolver) {
-              this.codeSubmitResolver.reject(new Error(failureReason.message));
-              this.codeSubmitResolver = null;
+            // 3. Error / Rejection from TV during PIN verification
+            if (msg.type === 'error') {
+              const errorStr = (msg.error || '').toLowerCase();
+              let failureReason: PairingFailureReason;
+
+              if (errorStr.includes('pin') || errorStr.includes('invalid') || errorStr.includes('401') || errorStr.includes('unauthorized')) {
+                failureReason = {
+                  code: 'INCORRECT_PIN',
+                  message: 'Incorrect PIN code entered. Please check your TV screen.',
+                };
+              } else if (errorStr.includes('expire') || errorStr.includes('timeout')) {
+                failureReason = {
+                  code: 'EXPIRED_PIN',
+                  message: 'Pairing code has expired. Please search and request a new code.',
+                };
+              } else {
+                failureReason = {
+                  code: 'REJECTED',
+                  message: msg.error || 'Pairing was rejected by the TV.',
+                };
+              }
+
+              if (this.codeSubmitResolver) {
+                this.codeSubmitResolver.reject(new Error(failureReason.message));
+                this.codeSubmitResolver = null;
+              }
+
+              this.handleFailure(failureReason);
+            }
+          } catch {
+            // Ignore non-json
+          }
+        };
+
+        currentWs.onerror = (e: any) => {
+          if (this.ws !== currentWs) return;
+          console.warn('[PairingService] WebSocket error on', url);
+
+          // In Expo Go (__DEV__), if direct wss:// is rejected by Android's SSL policy,
+          // seamlessly fallback to dev bridge on port 3002
+          if (__DEV__ && !triedDevFallback && url.startsWith('wss://')) {
+            triedDevFallback = true;
+            const devBridgeUrl = getDevBridgeWebSocketUrl(tv);
+            if (devBridgeUrl) {
+              console.log('[PairingService] Falling back to dev bridge:', devBridgeUrl);
+              connectSocket(devBridgeUrl);
+              return;
+            }
+          }
+
+          this.handleFailure({
+            code: 'UNAVAILABLE',
+            message: 'Unable to connect to TV. Ensure your TV and phone are on the same Wi-Fi network.',
+          });
+        };
+
+        currentWs.onclose = () => {
+          if (this.ws !== currentWs) return;
+          console.log('[PairingService] WebSocket closed');
+
+          if (this.isPairingInProgress && !this.savedClientKey) {
+            if (__DEV__ && !triedDevFallback && url.startsWith('wss://')) {
+              triedDevFallback = true;
+              const devBridgeUrl = getDevBridgeWebSocketUrl(tv);
+              if (devBridgeUrl) {
+                console.log('[PairingService] Retrying on dev bridge after close:', devBridgeUrl);
+                connectSocket(devBridgeUrl);
+                return;
+              }
             }
 
-            this.handleFailure(failureReason);
+            this.handleFailure({
+              code: 'WIFI_DISCONNECTED',
+              message: 'Connection closed by TV or network disconnected.',
+            });
           }
-        } catch {
-          // Ignore non-json
-        }
-      };
-
-      currentWs.onerror = (e: any) => {
-        if (this.ws !== currentWs) return;
-        console.warn('[PairingService] WebSocket error:', e?.message || e);
+        };
+      } catch (err: any) {
         this.handleFailure({
           code: 'UNAVAILABLE',
-          message: 'Unable to connect to TV. Ensure your TV and phone are on the same Wi-Fi network.',
+          message: err?.message || 'Failed to establish connection with TV.',
         });
-      };
+      }
+    };
 
-      currentWs.onclose = () => {
-        if (this.ws !== currentWs) return;
-        console.log('[PairingService] WebSocket closed');
-        if (this.isPairingInProgress && !this.savedClientKey) {
-          this.handleFailure({
-            code: 'WIFI_DISCONNECTED',
-            message: 'Connection closed by TV or network disconnected.',
-          });
-        }
-      };
-    } catch (err: any) {
-      this.handleFailure({
-        code: 'UNAVAILABLE',
-        message: err?.message || 'Failed to establish connection with TV.',
-      });
-    }
+    connectSocket(wsUrl);
   }
 
   /**

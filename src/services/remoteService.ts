@@ -6,6 +6,7 @@
 
 import { DiscoveredTV } from '../types/device';
 import { Direction, KeyCode } from '../types/remote';
+import { getDevBridgeWebSocketUrl } from '../utils/devBridge';
 import { StorageService } from '../utils/storage';
 
 const FULL_PERMISSIONS = [
@@ -73,6 +74,8 @@ export class RemoteService {
     // Retrieve saved client-key if this TV was paired previously
     const savedKey = await StorageService.getClientKey(tv.host);
 
+    let triedDevFallback = false;
+
     this.connectionPromise = new Promise((resolve) => {
       let resolved = false;
       const markResolved = (val: boolean) => {
@@ -83,131 +86,158 @@ export class RemoteService {
         }
       };
 
-      try {
-        const currentWs = new WebSocket(wsUrl);
-        this.ws = currentWs;
+      const connectSocket = (url: string) => {
+        try {
+          const currentWs = new WebSocket(url);
+          this.ws = currentWs;
 
-        currentWs.onopen = () => {
-          if (this.ws !== currentWs || currentWs.readyState !== WebSocket.OPEN) {
-            return;
-          }
+          currentWs.onopen = () => {
+            if (this.ws !== currentWs || currentWs.readyState !== WebSocket.OPEN) {
+              return;
+            }
 
-          console.log(`[RemoteService] Connected to TV control service at ${wsUrl}`);
-          this.isConnected = true;
+            console.log(`[RemoteService] Connected to TV control service at ${url}`);
+            this.isConnected = true;
 
-          const regPayload: any = {
-            type: 'register',
-            id: 'control_session',
-            payload: {
-              forcePairing: false,
-              pairingType: 'PROMPT',
-              manifest: {
-                manifestVersion: 1,
-                appVersion: '1.0',
-                signed: {
-                  created: '20140509',
-                  appId: 'com.lge.test',
-                  vendorId: 'com.lge',
-                  localizedAppNames: { '': 'LG Remote App' },
+            const regPayload: any = {
+              type: 'register',
+              id: 'control_session',
+              payload: {
+                forcePairing: false,
+                pairingType: 'PROMPT',
+                manifest: {
+                  manifestVersion: 1,
+                  appVersion: '1.0',
+                  signed: {
+                    created: '20140509',
+                    appId: 'com.lge.test',
+                    vendorId: 'com.lge',
+                    localizedAppNames: { '': 'LG Remote App' },
+                    permissions: FULL_PERMISSIONS,
+                  },
                   permissions: FULL_PERMISSIONS,
+                  signatures: [{ signature: 'dummy', signatureVersion: 1 }],
                 },
-                permissions: FULL_PERMISSIONS,
-                signatures: [{ signature: 'dummy', signatureVersion: 1 }],
               },
-            },
+            };
+
+            if (savedKey) {
+              console.log('[RemoteService] Sending saved client-key with registration');
+              regPayload.payload['client-key'] = savedKey;
+            }
+
+            try {
+              currentWs.send(JSON.stringify(regPayload));
+            } catch (sendErr) {
+              console.warn('[RemoteService] Error sending registration:', sendErr);
+            }
+
+            // Flush any queued commands
+            while (this.commandQueue.length > 0) {
+              const queued = this.commandQueue.shift();
+              console.log(`[RemoteService] Sending queued command: ${queued.uri || queued.name}`);
+              try {
+                currentWs.send(JSON.stringify(queued));
+              } catch {}
+            }
           };
 
-          if (savedKey) {
-            console.log('[RemoteService] Sending saved client-key with registration');
-            regPayload.payload['client-key'] = savedKey;
-          }
-
-          try {
-            currentWs.send(JSON.stringify(regPayload));
-          } catch (sendErr) {
-            console.warn('[RemoteService] Error sending registration:', sendErr);
-          }
-
-          // Flush any queued commands
-          while (this.commandQueue.length > 0) {
-            const queued = this.commandQueue.shift();
-            console.log(`[RemoteService] Sending queued command: ${queued.uri || queued.name}`);
+          currentWs.onmessage = async (event) => {
+            if (this.ws !== currentWs) return;
             try {
-              currentWs.send(JSON.stringify(queued));
-            } catch {}
-          }
-        };
+              const data = JSON.parse(event.data);
+              console.log('[RemoteService] TV message:', data);
 
-        currentWs.onmessage = async (event) => {
-          if (this.ws !== currentWs) return;
-          try {
-            const data = JSON.parse(event.data);
-            console.log('[RemoteService] TV message:', data);
-
-            // Update mute status if reported by TV
-            if (data.payload?.volumeStatus?.muteStatus !== undefined) {
-              this.isMuted = Boolean(data.payload.volumeStatus.muteStatus);
-            }
-            if (data.payload?.muteStatus !== undefined) {
-              this.isMuted = Boolean(data.payload.muteStatus);
-            }
-
-            // If TV accepted registration and emitted client-key:
-            if (data.type === 'registered' && data.payload && data.payload['client-key']) {
-              const newKey = data.payload['client-key'];
-              console.log('[RemoteService] TV registered successfully! Client-key:', newKey);
-              await StorageService.setClientKey(tv.host, newKey);
-              this.isConnected = true;
-              this.startHeartbeat();
-              markResolved(true);
-            } else if (data.type === 'response' && data.payload && data.payload.returnValue && savedKey) {
-              this.isConnected = true;
-              this.startHeartbeat();
-              markResolved(true);
-            }
-          } catch {
-            // Ignore
-          }
-        };
-
-        currentWs.onerror = (e) => {
-          if (this.ws !== currentWs) return;
-          console.warn('[RemoteService] WebSocket error:', e);
-          this.stopHeartbeat();
-          markResolved(false);
-        };
-
-        currentWs.onclose = () => {
-          if (this.ws !== currentWs) return;
-          console.log('[RemoteService] Remote control WebSocket closed');
-          this.stopHeartbeat();
-          this.isConnected = false;
-          markResolved(false);
-
-          // Auto-reconnect if TV target is still set
-          if (this.activeTv) {
-            const target = this.activeTv;
-            setTimeout(() => {
-              if (this.activeTv && (!this.ws || this.ws.readyState === WebSocket.CLOSED)) {
-                console.log('[RemoteService] Auto-reconnecting to TV...');
-                this.connect(target, this.onDisconnectCallback || undefined);
+              // Update mute status if reported by TV
+              if (data.payload?.volumeStatus?.muteStatus !== undefined) {
+                this.isMuted = Boolean(data.payload.volumeStatus.muteStatus);
               }
-            }, 1000);
-          }
-        };
+              if (data.payload?.muteStatus !== undefined) {
+                this.isMuted = Boolean(data.payload.muteStatus);
+              }
 
-        // Fallback safety timeout
-        setTimeout(() => {
-          if (!resolved) {
-            this.isConnected = Boolean(savedKey);
-            markResolved(this.isConnected);
-          }
-        }, 2000);
-      } catch (e) {
-        console.warn('[RemoteService] Failed to initialize WebSocket:', e);
-        this.disconnect();
-        markResolved(false);
-      }
+              // If TV accepted registration and emitted client-key:
+              if (data.type === 'registered' && data.payload && data.payload['client-key']) {
+                const newKey = data.payload['client-key'];
+                console.log('[RemoteService] TV registered successfully! Client-key:', newKey);
+                await StorageService.setClientKey(tv.host, newKey);
+                this.isConnected = true;
+                this.startHeartbeat();
+                markResolved(true);
+              } else if (data.type === 'response' && data.payload && data.payload.returnValue && savedKey) {
+                this.isConnected = true;
+                this.startHeartbeat();
+                markResolved(true);
+              }
+            } catch {
+              // Ignore
+            }
+          };
+
+          currentWs.onerror = (e) => {
+            if (this.ws !== currentWs) return;
+            console.warn('[RemoteService] WebSocket error on', url);
+
+            // In Expo Go (__DEV__), if direct wss:// is rejected by Android's SSL policy,
+            // seamlessly fallback to dev bridge on port 3002
+            if (__DEV__ && !triedDevFallback && url.startsWith('wss://')) {
+              triedDevFallback = true;
+              const devBridgeUrl = getDevBridgeWebSocketUrl(tv);
+              if (devBridgeUrl) {
+                console.log('[RemoteService] Falling back to dev bridge:', devBridgeUrl);
+                connectSocket(devBridgeUrl);
+                return;
+              }
+            }
+
+            this.stopHeartbeat();
+            markResolved(false);
+          };
+
+          currentWs.onclose = () => {
+            if (this.ws !== currentWs) return;
+            console.log('[RemoteService] Remote control WebSocket closed');
+
+            if (__DEV__ && !triedDevFallback && url.startsWith('wss://')) {
+              triedDevFallback = true;
+              const devBridgeUrl = getDevBridgeWebSocketUrl(tv);
+              if (devBridgeUrl) {
+                console.log('[RemoteService] Retrying on dev bridge after close:', devBridgeUrl);
+                connectSocket(devBridgeUrl);
+                return;
+              }
+            }
+
+            this.stopHeartbeat();
+            this.isConnected = false;
+            markResolved(false);
+
+            // Auto-reconnect if TV target is still set
+            if (this.activeTv) {
+              const target = this.activeTv;
+              setTimeout(() => {
+                if (this.activeTv && (!this.ws || this.ws.readyState === WebSocket.CLOSED)) {
+                  console.log('[RemoteService] Auto-reconnecting to TV...');
+                  this.connect(target, this.onDisconnectCallback || undefined);
+                }
+              }, 1000);
+            }
+          };
+
+          // Fallback safety timeout: if bridge is open or savedKey was sent, mark connected
+          setTimeout(() => {
+            if (!resolved && this.isConnected) {
+              markResolved(true);
+            }
+          }, 2500);
+        } catch (e) {
+          console.warn('[RemoteService] Failed to initialize WebSocket:', e);
+          this.disconnect();
+          markResolved(false);
+        }
+      };
+
+      connectSocket(wsUrl);
     });
 
     return this.connectionPromise;

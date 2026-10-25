@@ -10,6 +10,7 @@
 import * as Network from 'expo-network';
 import { DiscoveredTV, StoredTVDevice, TVProtocolType } from '../types/device';
 import { PROTOCOL_CONSTANTS } from '../utils/constants';
+import { getDevBridgeHost, setDiscoveredDevBridgeHost } from '../utils/devBridge';
 import { StorageService } from '../utils/storage';
 
 export type DiscoveryCallback = (devices: DiscoveredTV[]) => void;
@@ -290,6 +291,19 @@ export class DiscoveryService {
         const chunk = hostsToTest.slice(i, i + chunkSize);
         await Promise.all(
           chunk.map(async (testHost) => {
+            if (__DEV__ && !getDevBridgeHost()) {
+              try {
+                const bRes = await fetch(`http://${testHost}:3002/`, { signal: AbortSignal.timeout(250) });
+                if (bRes.ok) {
+                  const data = await bRes.json();
+                  if (data && data.bridge === 'tv-remote') {
+                    console.log(`[DiscoveryService] Discovered dev bridge at ${testHost}`);
+                    setDiscoveredDevBridgeHost(testHost);
+                  }
+                }
+              } catch {}
+            }
+
             const detected = await identifyTV(testHost, 650);
             if (detected) {
               const id = `tv_${testHost.replace(/\./g, '_')}`;
