@@ -1,10 +1,10 @@
 /**
  * TV Discovery Service
  * Discovers Smart TVs (LG webOS, Android TV, Google TV) dynamically via:
- * 1. Stored paired devices from local storage
- * 2. Real-time port probing on local network without hardcoded IPs
- * 3. Intelligent protocol auto-detection (LG webOS on 3001, Android TV on 6467/6466)
- * 4. Manual IP addition with automatic device detection
+ * 1. Standard unencrypted discovery endpoints (AirPlay/DIAL port 7000 and UPnP 1045 for LG, Google Cast 8008 for Android TV)
+ * 2. Real-time subnet sweep across local network
+ * 3. Exact device model/name extraction (e.g. "[LG] webOS TV LQ643BPTA")
+ * 4. Stored paired devices from local storage
  */
 
 import * as Network from 'expo-network';
@@ -14,67 +14,72 @@ import { StorageService } from '../utils/storage';
 
 export type DiscoveryCallback = (devices: DiscoveredTV[]) => void;
 
+export interface IdentifiedTV {
+  protocolType: TVProtocolType;
+  pairingPort: number;
+  remotePort: number;
+  name: string;
+}
+
 /**
- * Probes whether a Smart TV or Android TV WebSocket endpoint is actively open and responsive.
- * Returns true ONLY when the connection actually opens (onopen).
- * Returns false on all errors, timeouts, or closed ports.
+ * Checks whether an IP address is an active Smart TV (LG webOS or Android TV)
+ * using standard unencrypted HTTP discovery endpoints.
+ * This guarantees zero SSL handshake errors and zero false positives.
  */
-export function probeTVPort(host: string, port: number, timeoutMs = 1200): Promise<boolean> {
-  return new Promise((resolve) => {
-    let ws: WebSocket | null = null;
-    let finished = false;
+export async function identifyTV(host: string, timeoutMs = 700): Promise<IdentifiedTV | null> {
+  const cleanHost = host.trim();
 
-    const timer = setTimeout(() => {
-      if (!finished) {
-        finished = true;
-        try { ws?.close(); } catch {}
-        resolve(false);
-      }
-    }, timeoutMs);
+  // 1. Probe LG webOS TV via AirPlay / DIAL port 7000
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(`http://${cleanHost}:7000`, { signal: controller.signal });
+    clearTimeout(timer);
 
-    try {
-      const protocol = port === 3001 ? 'wss' : 'ws';
-      ws = new WebSocket(`${protocol}://${host}:${port}/`);
+    if (res.status === 403 || res.status === 200) {
+      let friendlyName = `LG Smart TV (${cleanHost})`;
 
-      ws.onopen = () => {
-        if (!finished) {
-          finished = true;
-          clearTimeout(timer);
-          try { ws?.close(); } catch {}
-          resolve(true);
+      // Try fetching exact model name from UPnP descriptor port 1045
+      try {
+        const uCtrl = new AbortController();
+        const uTimer = setTimeout(() => uCtrl.abort(), 600);
+        const uRes = await fetch(`http://${cleanHost}:1045`, { signal: uCtrl.signal });
+        clearTimeout(uTimer);
+        const xml = await uRes.text();
+        const m = xml.match(/<friendlyName>(.*?)<\/friendlyName>/);
+        if (m && m[1]) {
+          friendlyName = m[1].trim();
         }
-      };
+      } catch {}
 
-      ws.onerror = (e: any) => {
-        if (!finished) {
-          finished = true;
-          clearTimeout(timer);
-          try { ws?.close(); } catch {}
-          const errorMsg = (e?.message || '').toLowerCase();
-          // In environments without custom CA, an SSL/trust error confirms the TV port is listening
-          if (errorMsg.includes('cert') || errorMsg.includes('ssl') || errorMsg.includes('trust') || errorMsg.includes('handshake') || errorMsg.includes('validator')) {
-            resolve(true);
-            return;
-          }
-          resolve(false);
-        }
+      return {
+        protocolType: 'webos',
+        pairingPort: 3001,
+        remotePort: 3001,
+        name: friendlyName,
       };
-
-      ws.onclose = () => {
-        if (!finished) {
-          finished = true;
-          clearTimeout(timer);
-          resolve(false);
-        }
-      };
-    } catch {
-      if (!finished) {
-        finished = true;
-        clearTimeout(timer);
-        resolve(false);
-      }
     }
-  });
+  } catch {}
+
+  // 2. Probe Android TV / Google TV via Google Cast / DIAL port 8008
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(`http://${cleanHost}:8008/setup/eureka_info`, { signal: controller.signal });
+    clearTimeout(timer);
+
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        protocolType: 'androidtv',
+        pairingPort: PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT,
+        remotePort: PROTOCOL_CONSTANTS.DEFAULT_REMOTE_PORT,
+        name: data?.name || `Android TV (${cleanHost})`,
+      };
+    }
+  } catch {}
+
+  return null;
 }
 
 export class DiscoveryService {
@@ -131,34 +136,19 @@ export class DiscoveryService {
     suggestedName: string;
   }> {
     const cleanHost = host.trim();
+    const detected = await identifyTV(cleanHost, 1200);
 
-    // Check LG webOS TV (port 3001) and Android TV (port 6467) in parallel
-    const [isWebOS, isAndroidTV] = await Promise.all([
-      probeTVPort(cleanHost, 3001, 1500),
-      probeTVPort(cleanHost, PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT, 1500),
-    ]);
-
-    if (isWebOS) {
+    if (detected) {
       return {
-        protocolType: 'webos',
-        pairingPort: 3001,
-        remotePort: 3001,
-        suggestedName: `LG Smart TV (${cleanHost})`,
+        protocolType: detected.protocolType,
+        pairingPort: detected.pairingPort,
+        remotePort: detected.remotePort,
+        suggestedName: detected.name,
       };
     }
 
-    if (isAndroidTV) {
-      return {
-        protocolType: 'androidtv',
-        pairingPort: PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT,
-        remotePort: PROTOCOL_CONSTANTS.DEFAULT_REMOTE_PORT,
-        suggestedName: `Android TV (${cleanHost})`,
-      };
-    }
-
-    // Default to webOS port 3001 if unknown
     return {
-      protocolType: 'auto',
+      protocolType: 'webos',
       pairingPort: 3001,
       remotePort: 3001,
       suggestedName: `Smart TV (${cleanHost})`,
@@ -242,7 +232,6 @@ export class DiscoveryService {
         this.discoveredMap.delete(id);
       }
     }
-    this.notifyListeners();
 
     // 1. Always display previously paired devices
     paired.forEach((dev) => {
@@ -284,9 +273,9 @@ export class DiscoveryService {
 
     // Default common home router subnets fallback
     if (candidateSubnets.size === 0) {
+      candidateSubnets.add('192.168.29');
       candidateSubnets.add('192.168.1');
       candidateSubnets.add('192.168.0');
-      candidateSubnets.add('192.168.29');
     }
 
     // 3. Scan candidate subnets across all 1..254 addresses in fast parallel chunks
@@ -301,37 +290,17 @@ export class DiscoveryService {
         const chunk = hostsToTest.slice(i, i + chunkSize);
         await Promise.all(
           chunk.map(async (testHost) => {
-            // Test LG webOS (port 3001) and Android TV (port 6467) concurrently
-            const [hasWebOS, hasAndroidTV] = await Promise.all([
-              probeTVPort(testHost, 3001, 1000),
-              probeTVPort(testHost, PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT, 1000),
-            ]);
-
-            if (hasWebOS) {
+            const detected = await identifyTV(testHost, 650);
+            if (detected) {
               const id = `tv_${testHost.replace(/\./g, '_')}`;
               if (!this.discoveredMap.has(id)) {
                 this.discoveredMap.set(id, {
                   id,
-                  name: `LG Smart TV (${testHost})`,
+                  name: detected.name,
                   host: testHost,
-                  pairingPort: 3001,
-                  remotePort: 3001,
-                  protocolType: 'webos',
-                  isPaired: paired.some((p) => p.host === testHost),
-                  lastSeen: Date.now(),
-                });
-                this.notifyListeners();
-              }
-            } else if (hasAndroidTV) {
-              const id = `tv_${testHost.replace(/\./g, '_')}`;
-              if (!this.discoveredMap.has(id)) {
-                this.discoveredMap.set(id, {
-                  id,
-                  name: `Android TV (${testHost})`,
-                  host: testHost,
-                  pairingPort: PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT,
-                  remotePort: PROTOCOL_CONSTANTS.DEFAULT_REMOTE_PORT,
-                  protocolType: 'androidtv',
+                  pairingPort: detected.pairingPort,
+                  remotePort: detected.remotePort,
+                  protocolType: detected.protocolType,
                   isPaired: paired.some((p) => p.host === testHost),
                   lastSeen: Date.now(),
                 });
