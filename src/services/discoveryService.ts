@@ -15,26 +15,59 @@ import { StorageService } from '../utils/storage';
 export type DiscoveryCallback = (devices: DiscoveredTV[]) => void;
 
 /**
- * Checks if a specific TCP port is open and actively responding on the target host.
- * Completed in < 300ms on active ports, times out on closed/unreachable hosts.
+ * Probes whether a Smart TV or Android TV WebSocket endpoint is actively open and responsive.
+ * Returns true ONLY when the connection actually opens (onopen).
+ * Returns false on all errors, timeouts, or closed ports.
  */
-export async function isPortOpen(host: string, port: number, timeoutMs = 700): Promise<boolean> {
-  const start = Date.now();
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    await fetch(`http://${host}:${port}`, { signal: controller.signal });
-    clearTimeout(timer);
-    return true;
-  } catch (err: any) {
-    const duration = Date.now() - start;
-    // Timeout/AbortError means the host/port is not responding
-    if (err?.name === 'AbortError' || err?.name === 'TimeoutError' || duration >= timeoutMs - 50) {
-      return false;
+export function probeTVPort(host: string, port: number, timeoutMs = 1200): Promise<boolean> {
+  return new Promise((resolve) => {
+    let ws: WebSocket | null = null;
+    let finished = false;
+
+    const timer = setTimeout(() => {
+      if (!finished) {
+        finished = true;
+        try { ws?.close(); } catch {}
+        resolve(false);
+      }
+    }, timeoutMs);
+
+    try {
+      const protocol = port === 3001 ? 'wss' : 'ws';
+      ws = new WebSocket(`${protocol}://${host}:${port}/`);
+
+      ws.onopen = () => {
+        if (!finished) {
+          finished = true;
+          clearTimeout(timer);
+          try { ws?.close(); } catch {}
+          resolve(true);
+        }
+      };
+
+      ws.onerror = () => {
+        if (!finished) {
+          finished = true;
+          clearTimeout(timer);
+          resolve(false);
+        }
+      };
+
+      ws.onclose = () => {
+        if (!finished) {
+          finished = true;
+          clearTimeout(timer);
+          resolve(false);
+        }
+      };
+    } catch {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timer);
+        resolve(false);
+      }
     }
-    // Any immediate socket response / TLS alert / reset (< timeout) indicates an active listening port
-    return true;
-  }
+  });
 }
 
 export class DiscoveryService {
@@ -94,8 +127,8 @@ export class DiscoveryService {
 
     // Check LG webOS TV (port 3001) and Android TV (port 6467) in parallel
     const [isWebOS, isAndroidTV] = await Promise.all([
-      isPortOpen(cleanHost, 3001, 1500),
-      isPortOpen(cleanHost, PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT, 1500),
+      probeTVPort(cleanHost, 3001, 1500),
+      probeTVPort(cleanHost, PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT, 1500),
     ]);
 
     if (isWebOS) {
@@ -195,10 +228,19 @@ export class DiscoveryService {
   private static async scanActiveDevices(): Promise<void> {
     const paired = await StorageService.getPairedDevices();
 
+    // 0. Remove stale unverified devices from previous scans
+    const pairedIds = new Set(paired.map((p) => p.id));
+    for (const id of Array.from(this.discoveredMap.keys())) {
+      if (!pairedIds.has(id)) {
+        this.discoveredMap.delete(id);
+      }
+    }
+    this.notifyListeners();
+
     // 1. Verify and update connectivity for all saved devices first
     await Promise.all(
       paired.map(async (dev) => {
-        const isOpen = await isPortOpen(dev.host, dev.remotePort || dev.pairingPort || 3001, 800);
+        const isOpen = await probeTVPort(dev.host, dev.remotePort || dev.pairingPort || 3001, 1000);
         if (isOpen) {
           this.discoveredMap.set(dev.id, {
             id: dev.id,
@@ -259,8 +301,8 @@ export class DiscoveryService {
           chunk.map(async (testHost) => {
             // Test LG webOS (port 3001) and Android TV (port 6467) concurrently
             const [hasWebOS, hasAndroidTV] = await Promise.all([
-              isPortOpen(testHost, 3001, 600),
-              isPortOpen(testHost, PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT, 600),
+              probeTVPort(testHost, 3001, 1000),
+              probeTVPort(testHost, PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT, 1000),
             ]);
 
             if (hasWebOS) {
