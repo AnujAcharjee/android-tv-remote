@@ -125,6 +125,9 @@ export class ConnectionManager {
     this.setState('deviceSelected', tv);
 
     await this.pairingService.startPairing(tv, {
+      onAwaitingPrompt: () => {
+        this.setState('awaitingPrompt', tv, null);
+      },
       onAwaitingCode: (length) => {
         this.pinLength = length || 8;
         this.setState('awaitingCode', tv, null);

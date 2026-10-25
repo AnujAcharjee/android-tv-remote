@@ -3,7 +3,7 @@
  * Simple, focused screen for entering the numeric pairing code displayed on the TV.
  */
 
-import { AlertCircle, X } from 'lucide-react-native';
+import { AlertCircle, Tv, X } from 'lucide-react-native';
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
@@ -41,6 +41,8 @@ export const PairingScreen: React.FC<PairingScreenProps> = ({
   const [pin, setPin] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
 
+  const isAwaitingPrompt = connectionState === 'awaitingPrompt';
+  const isAwaitingCode = connectionState === 'awaitingCode';
   const isPairing = connectionState === 'pairing';
   const isFailed = connectionState === 'failed';
   const activeError = localError || errorMessage;
@@ -80,91 +82,128 @@ export const PairingScreen: React.FC<PairingScreenProps> = ({
         </View>
 
         <View style={styles.content}>
-          {/* Simple Title & Message */}
-          <Text style={styles.title}>Enter pairing code</Text>
-          <Text style={styles.instruction}>
-            Enter the code displayed on your TV screen.
-          </Text>
+          {isAwaitingPrompt ? (
+            /* ON-SCREEN TV PROMPT MODE (Standard for Smart TVs / LG webOS) */
+            <View style={styles.promptContainer}>
+              <View style={styles.tvIconCircle}>
+                <Tv size={42} color={THEME.colors.primary} />
+              </View>
 
-          {/* Error Banner */}
-          {activeError ? (
-            <View style={styles.errorBanner}>
-              <AlertCircle size={18} color={THEME.colors.accentRed} />
-              <Text style={styles.errorText}>{activeError}</Text>
-            </View>
-          ) : null}
+              <Text style={styles.title}>Confirm on your TV</Text>
+              <Text style={styles.instruction}>
+                {`A prompt has appeared on "${tv?.name || 'your TV'}".\nPlease press "Allow" or "Yes" using your TV remote.`}
+              </Text>
 
-          {/* Code Input Field */}
-          <View style={styles.inputWrapper}>
-            <TextInput
-              style={[
-                styles.pinInput,
-                activeError ? styles.pinInputError : null,
-                isPairing ? styles.pinInputDisabled : null,
-              ]}
-              value={pin}
-              onChangeText={(text) => {
-                setPin(text.toUpperCase());
-                setLocalError(null);
-              }}
-              placeholder="Code"
-              placeholderTextColor="#475569"
-              keyboardType="default"
-              autoCapitalize="characters"
-              autoCorrect={false}
-              maxLength={12}
-              autoFocus
-              editable={!isPairing}
-              textAlign="center"
-              returnKeyType="done"
-              onSubmitEditing={handlePair}
-            />
-          </View>
-
-          {/* Action Buttons */}
-          <View style={styles.actions}>
-            {isFailed ? (
-              <TouchableOpacity
-                style={styles.retryButton}
-                onPress={() => {
-                  setPin('');
-                  setLocalError(null);
-                  onRetry();
-                }}
-                disabled={isPairing}
-              >
-                <Text style={styles.retryText}>Retry Pairing</Text>
-              </TouchableOpacity>
-            ) : null}
-
-            <TouchableOpacity
-              style={[
-                styles.pairButton,
-                (!pin.trim() || isPairing) && styles.pairButtonDisabled,
-              ]}
-              onPress={handlePair}
-              disabled={!pin.trim() || isPairing}
-              accessibilityLabel="Pair TV"
-              accessibilityRole="button"
-            >
-              {isPairing ? (
-                <View style={styles.loadingRow}>
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                  <Text style={styles.pairButtonText}>Verifying with TV...</Text>
+              {activeError ? (
+                <View style={styles.errorBanner}>
+                  <AlertCircle size={18} color={THEME.colors.accentRed} />
+                  <Text style={styles.errorText}>{activeError}</Text>
                 </View>
-              ) : (
-                <Text style={styles.pairButtonText}>Pair TV</Text>
-              )}
-            </TouchableOpacity>
+              ) : null}
 
-            <TouchableOpacity
-              style={styles.cancelButton}
-              onPress={onCancel}
-              disabled={isPairing}
-            >
-              <Text style={styles.cancelText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
+              <View style={styles.waitingBadge}>
+                <ActivityIndicator color={THEME.colors.primary} size="small" />
+                <Text style={styles.waitingText}>Waiting for TV confirmation...</Text>
+              </View>
+
+              <View style={styles.actions}>
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={onCancel}
+                >
+                  <Text style={styles.cancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            /* PIN ENTRY MODE (For TVs requiring numeric PIN) */
+            <>
+              <Text style={styles.title}>Enter pairing code</Text>
+              <Text style={styles.instruction}>
+                Enter the code displayed on your TV screen.
+              </Text>
+
+              {/* Error Banner */}
+              {activeError ? (
+                <View style={styles.errorBanner}>
+                  <AlertCircle size={18} color={THEME.colors.accentRed} />
+                  <Text style={styles.errorText}>{activeError}</Text>
+                </View>
+              ) : null}
+
+              {/* Code Input Field */}
+              <View style={styles.inputWrapper}>
+                <TextInput
+                  style={[
+                    styles.pinInput,
+                    activeError ? styles.pinInputError : null,
+                    isPairing ? styles.pinInputDisabled : null,
+                  ]}
+                  value={pin}
+                  onChangeText={(text) => {
+                    setPin(text.toUpperCase());
+                    setLocalError(null);
+                  }}
+                  placeholder="Code"
+                  placeholderTextColor="#475569"
+                  keyboardType="default"
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  maxLength={12}
+                  autoFocus
+                  editable={!isPairing}
+                  textAlign="center"
+                  returnKeyType="done"
+                  onSubmitEditing={handlePair}
+                />
+              </View>
+
+              {/* Action Buttons */}
+              <View style={styles.actions}>
+                {isFailed ? (
+                  <TouchableOpacity
+                    style={styles.retryButton}
+                    onPress={() => {
+                      setPin('');
+                      setLocalError(null);
+                      onRetry();
+                    }}
+                    disabled={isPairing}
+                  >
+                    <Text style={styles.retryText}>Retry Pairing</Text>
+                  </TouchableOpacity>
+                ) : null}
+
+                <TouchableOpacity
+                  style={[
+                    styles.pairButton,
+                    (!pin.trim() || isPairing) && styles.pairButtonDisabled,
+                  ]}
+                  onPress={handlePair}
+                  disabled={!pin.trim() || isPairing}
+                  accessibilityLabel="Pair TV"
+                  accessibilityRole="button"
+                >
+                  {isPairing ? (
+                    <View style={styles.loadingRow}>
+                      <ActivityIndicator color="#FFFFFF" size="small" />
+                      <Text style={styles.pairButtonText}>Verifying with TV...</Text>
+                    </View>
+                  ) : (
+                    <Text style={styles.pairButtonText}>Pair TV</Text>
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={onCancel}
+                  disabled={isPairing}
+                >
+                  <Text style={styles.cancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -303,5 +342,38 @@ const styles = StyleSheet.create({
     color: THEME.colors.textMuted,
     fontSize: 14,
     fontWeight: '500',
+  },
+  promptContainer: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tvIconCircle: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: 'rgba(99, 102, 241, 0.12)',
+    borderWidth: 2,
+    borderColor: 'rgba(99, 102, 241, 0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 24,
+  },
+  waitingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+    borderRadius: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    marginBottom: 32,
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.25)',
+  },
+  waitingText: {
+    color: THEME.colors.primary,
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

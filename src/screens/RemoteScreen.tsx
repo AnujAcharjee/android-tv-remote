@@ -333,6 +333,9 @@ export const RemoteScreen: React.FC<RemoteScreenProps> = ({
         visible={showDevicePicker}
         devices={devices}
         isScanning={isScanning}
+        currentTvId={currentTv?.id}
+        currentTvHost={currentTv?.host}
+        connectionState={connectionState}
         onSelectDevice={handleSelectDevice}
         onScanAgain={startDiscovery}
         onConnectByIp={() => {

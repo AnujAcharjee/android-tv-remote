@@ -6,6 +6,7 @@ export type TVConnectionState =
   | 'idle'
   | 'discovering'
   | 'deviceSelected'
+  | 'awaitingPrompt'
   | 'awaitingCode'
   | 'pairing'
   | 'connected'

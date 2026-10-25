@@ -10,6 +10,7 @@ import { SecureStorageService } from '../utils/secureStorage';
 import { StorageService } from '../utils/storage';
 
 export interface PairingCallbacks {
+  onAwaitingPrompt?: () => void;
   onAwaitingCode: (pinLength: number) => void;
   onSuccess: (tv: DiscoveredTV) => void;
   onFailure: (failure: PairingFailureReason) => void;
@@ -61,7 +62,6 @@ export class PairingService {
       });
     }, 60000);
 
-    let awaitingCodeFallbackTimer: NodeJS.Timeout | null = null;
     let triedDevFallback = false;
 
     const connectSocket = (url: string) => {
@@ -74,14 +74,14 @@ export class PairingService {
             return;
           }
 
-          console.log(`[PairingService] WebSocket open on ${url}. Sending registration...`);
+          console.log(`[PairingService] WebSocket open on ${url}. Sending standard PROMPT registration...`);
 
           const regPayload = {
             type: 'register',
             id: 'reg_handshake',
             payload: {
-              forcePairing: true,
-              pairingType: 'PIN',
+              forcePairing: false,
+              pairingType: 'PROMPT',
               manifest: {
                 manifestVersion: 1,
                 appVersion: '1.0',
@@ -104,35 +104,29 @@ export class PairingService {
             console.warn('[PairingService] Error sending registration:', sendErr);
           }
 
-          // Display code screen once registration is sent (fallback after brief delay)
-          awaitingCodeFallbackTimer = setTimeout(() => {
-            if (this.isPairingInProgress && this.ws === currentWs) {
-              callbacks.onAwaitingCode(8);
-            }
-          }, 1200);
+          // Let the UI know we are awaiting confirmation on the TV screen
+          if (callbacks.onAwaitingPrompt) {
+            callbacks.onAwaitingPrompt();
+          }
         };
 
         currentWs.onmessage = async (event) => {
           if (this.ws !== currentWs) return;
-          if (awaitingCodeFallbackTimer) {
-            clearTimeout(awaitingCodeFallbackTimer);
-            awaitingCodeFallbackTimer = null;
-          }
           try {
             const msg = JSON.parse(event.data);
             console.log('[PairingService] TV response:', msg);
 
-            // 1. PIN display acknowledgment from TV
+            // 1. If TV explicitly requires a PIN instead of PROMPT:
             if (msg.type === 'response' && msg.id === 'reg_handshake') {
-              if (msg.payload && (msg.payload.pairingType === 'PIN' || msg.payload.pairingType === 'PROMPT')) {
+              if (msg.payload && msg.payload.pairingType === 'PIN') {
                 callbacks.onAwaitingCode(8);
               }
             }
 
-            // 2. Successful verification from TV
+            // 2. Successful verification / approval from TV
             if (msg.type === 'registered' && msg.payload && msg.payload['client-key']) {
               const key = msg.payload['client-key'];
-              console.log('[PairingService] TV accepted PIN! Verified client-key:', key);
+              console.log('[PairingService] TV approved connection! Received client-key:', key);
               this.savedClientKey = key;
 
               // Persist verified credentials securely in hardware Keystore

@@ -107,21 +107,17 @@ export class DiscoveryService {
   public static async loadSavedDevices(): Promise<DiscoveredTV[]> {
     const paired: StoredTVDevice[] = await StorageService.getPairedDevices();
     for (const item of paired) {
-      if (!this.discoveredMap.has(item.id)) {
-        this.discoveredMap.set(item.id, {
-          id: item.id,
-          name: item.name,
-          host: item.host,
-          pairingPort: item.pairingPort || (item.protocolType === 'webos' ? 3001 : PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT),
-          remotePort: item.remotePort || (item.protocolType === 'webos' ? 3001 : PROTOCOL_CONSTANTS.DEFAULT_REMOTE_PORT),
-          protocolType: item.protocolType || (item.pairingPort === 3001 || item.remotePort === 3001 ? 'webos' : 'androidtv'),
-          isPaired: true,
-          lastSeen: item.pairedAt,
-        });
-      } else {
-        const dev = this.discoveredMap.get(item.id)!;
-        dev.isPaired = true;
-      }
+      const existing = this.discoveredMap.get(item.host);
+      this.discoveredMap.set(item.host, {
+        id: item.id || `tv_${item.host.replace(/\./g, '_')}`,
+        name: item.name || existing?.name || `Smart TV (${item.host})`,
+        host: item.host,
+        pairingPort: item.pairingPort || (item.protocolType === 'webos' ? 3001 : PROTOCOL_CONSTANTS.DEFAULT_PAIRING_PORT),
+        remotePort: item.remotePort || (item.protocolType === 'webos' ? 3001 : PROTOCOL_CONSTANTS.DEFAULT_REMOTE_PORT),
+        protocolType: item.protocolType || (item.pairingPort === 3001 || item.remotePort === 3001 ? 'webos' : 'androidtv'),
+        isPaired: true,
+        lastSeen: item.pairedAt || Date.now(),
+      });
     }
     this.notifyListeners();
     return Array.from(this.discoveredMap.values());
@@ -227,16 +223,16 @@ export class DiscoveryService {
     const paired = await StorageService.getPairedDevices();
 
     // 0. Remove stale unverified devices from previous scans
-    const pairedIds = new Set(paired.map((p) => p.id));
-    for (const id of Array.from(this.discoveredMap.keys())) {
-      if (!pairedIds.has(id)) {
-        this.discoveredMap.delete(id);
+    const pairedHosts = new Set(paired.map((p) => p.host));
+    for (const host of Array.from(this.discoveredMap.keys())) {
+      if (!pairedHosts.has(host)) {
+        this.discoveredMap.delete(host);
       }
     }
 
     // 1. Always display previously paired devices
     paired.forEach((dev) => {
-      this.discoveredMap.set(dev.id, {
+      this.discoveredMap.set(dev.host, {
         id: dev.id,
         name: dev.name,
         host: dev.host,
@@ -306,20 +302,18 @@ export class DiscoveryService {
 
             const detected = await identifyTV(testHost, 650);
             if (detected) {
-              const id = `tv_${testHost.replace(/\./g, '_')}`;
-              if (!this.discoveredMap.has(id)) {
-                this.discoveredMap.set(id, {
-                  id,
-                  name: detected.name,
-                  host: testHost,
-                  pairingPort: detected.pairingPort,
-                  remotePort: detected.remotePort,
-                  protocolType: detected.protocolType,
-                  isPaired: paired.some((p) => p.host === testHost),
-                  lastSeen: Date.now(),
-                });
-                this.notifyListeners();
-              }
+              const existing = this.discoveredMap.get(testHost);
+              this.discoveredMap.set(testHost, {
+                id: existing?.id || `tv_${testHost.replace(/\./g, '_')}`,
+                name: detected.name || existing?.name || `Smart TV (${testHost})`,
+                host: testHost,
+                pairingPort: detected.pairingPort,
+                remotePort: detected.remotePort,
+                protocolType: detected.protocolType,
+                isPaired: existing?.isPaired || paired.some((p) => p.host === testHost),
+                lastSeen: Date.now(),
+              });
+              this.notifyListeners();
             }
           })
         );
@@ -330,8 +324,12 @@ export class DiscoveryService {
   /**
    * Forgets a device and removes it from the discovered map
    */
-  public static removeDevice(id: string): void {
-    this.discoveredMap.delete(id);
+  public static removeDevice(idOrHost: string): void {
+    for (const [host, dev] of this.discoveredMap.entries()) {
+      if (host === idOrHost || dev.id === idOrHost) {
+        this.discoveredMap.delete(host);
+      }
+    }
     this.notifyListeners();
   }
 
@@ -339,7 +337,12 @@ export class DiscoveryService {
     return Array.from(this.discoveredMap.values());
   }
 
-  public static getDeviceById(id: string): DiscoveredTV | undefined {
-    return this.discoveredMap.get(id);
+  public static getDeviceById(idOrHost: string): DiscoveredTV | undefined {
+    for (const [host, dev] of this.discoveredMap.entries()) {
+      if (host === idOrHost || dev.id === idOrHost) {
+        return dev;
+      }
+    }
+    return undefined;
   }
 }

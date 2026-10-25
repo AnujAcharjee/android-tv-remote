@@ -1,11 +1,10 @@
 /**
  * DevicePickerSheet Component
- * Google TV style bottom sheet modal prompted automatically on app launch
- * when no TV is connected, displaying all discoverable TVs on the Wi-Fi network.
+ * Clean, calm bottom sheet displaying discoverable TVs on the local Wi-Fi.
+ * Deduplicates devices and presents a unified, premium dark UI.
  */
 
 import {
-  Cast,
   CheckCircle2,
   ChevronRight,
   Plus,
@@ -14,10 +13,11 @@ import {
   Wifi,
   X,
 } from 'lucide-react-native';
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   ActivityIndicator,
   Modal,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -32,6 +32,9 @@ interface DevicePickerSheetProps {
   visible: boolean;
   devices: DiscoveredTV[];
   isScanning: boolean;
+  currentTvId?: string;
+  currentTvHost?: string;
+  connectionState?: string;
   onSelectDevice: (device: DiscoveredTV) => void;
   onScanAgain: () => void;
   onConnectByIp: () => void;
@@ -42,6 +45,9 @@ export const DevicePickerSheet: React.FC<DevicePickerSheetProps> = ({
   visible,
   devices,
   isScanning,
+  currentTvId,
+  currentTvHost,
+  connectionState,
   onSelectDevice,
   onScanAgain,
   onConnectByIp,
@@ -49,34 +55,30 @@ export const DevicePickerSheet: React.FC<DevicePickerSheetProps> = ({
 }) => {
   const { triggerLight, triggerMedium } = useHaptics();
 
-  const getDeviceBadge = (name: string) => {
-    const lower = name.toLowerCase();
-    if (lower.includes('google') || lower.includes('chromecast')) {
-      return {
-        label: 'Google TV',
-        color: '#4285F4',
-        icon: <Cast size={20} color="#FFFFFF" />,
-      };
+  // Deduplicate devices by IP address to eliminate chaotic duplicate rows
+  const uniqueDevices = useMemo(() => {
+    const map = new Map<string, DiscoveredTV>();
+    for (const dev of devices) {
+      if (!map.has(dev.host)) {
+        map.set(dev.host, dev);
+      } else {
+        const existing = map.get(dev.host)!;
+        if (!existing.isPaired && dev.isPaired) {
+          map.set(dev.host, dev);
+        }
+      }
     }
-    if (lower.includes('sony') || lower.includes('bravia')) {
-      return {
-        label: 'Sony BRAVIA',
-        color: '#E50914',
-        icon: <Tv size={20} color="#FFFFFF" />,
-      };
+    return Array.from(map.values());
+  }, [devices]);
+
+  const getProtocolLabel = (item: DiscoveredTV): string => {
+    if (item.protocolType === 'webos' || item.pairingPort === 3001 || item.remotePort === 3001) {
+      return 'LG webOS';
     }
-    if (lower.includes('smart') || lower.includes('living')) {
-      return {
-        label: 'Smart TV',
-        color: '#10B981',
-        icon: <Tv size={20} color="#FFFFFF" />,
-      };
+    if (item.protocolType === 'androidtv' || item.pairingPort === 6467 || item.remotePort === 6466) {
+      return 'Android TV';
     }
-    return {
-      label: 'Android TV',
-      color: THEME.colors.primary,
-      icon: <Tv size={20} color="#FFFFFF" />,
-    };
+    return 'Smart TV';
   };
 
   return (
@@ -86,72 +88,72 @@ export const DevicePickerSheet: React.FC<DevicePickerSheetProps> = ({
       animationType="slide"
       onRequestClose={onDismiss}
     >
-      <View style={styles.overlay}>
-        <View style={styles.sheetContainer}>
+      <Pressable style={styles.overlay} onPress={onDismiss}>
+        <Pressable style={styles.sheetContainer} onPress={(e) => e.stopPropagation()}>
           {/* DRAG HANDLE */}
           <View style={styles.handleBar} />
 
           {/* HEADER */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
-              <View style={styles.castIconBadge}>
-                <Cast size={20} color={THEME.colors.primary} />
-              </View>
-              <View>
-                <Text style={styles.title}>Connect to a TV</Text>
-                <Text style={styles.subtitle}>
-                  Select a Google TV or Android TV on your Wi-Fi
-                </Text>
-              </View>
-            </View>
-
-            <TouchableOpacity
-              onPress={() => {
-                triggerLight();
-                onDismiss();
-              }}
-              style={styles.closeButton}
-            >
-              <X size={20} color={THEME.colors.textSecondary} />
-            </TouchableOpacity>
-          </View>
-
-          {/* SCANNING RADAR BANNER */}
-          <View style={styles.scanningBanner}>
-            <View style={styles.scanningBannerLeft}>
-              <Wifi size={16} color={THEME.colors.accentGreen} />
-              <Text style={styles.scanningText}>
-                {isScanning ? 'Searching Wi-Fi for TVs...' : 'Ready to connect'}
+              <Text style={styles.title}>Available TVs</Text>
+              <Text style={styles.subtitle}>
+                {isScanning ? 'Scanning Wi-Fi...' : `${uniqueDevices.length} TV${uniqueDevices.length === 1 ? '' : 's'} found`}
               </Text>
             </View>
-            <TouchableOpacity
-              onPress={() => {
-                triggerLight();
-                onScanAgain();
-              }}
-              disabled={isScanning}
-              style={styles.refreshButton}
-            >
-              {isScanning ? (
-                <ActivityIndicator size="small" color={THEME.colors.primary} />
-              ) : (
-                <RefreshCw size={16} color={THEME.colors.textSecondary} />
-              )}
-            </TouchableOpacity>
+
+            <View style={styles.headerActions}>
+              <TouchableOpacity
+                onPress={() => {
+                  triggerLight();
+                  onScanAgain();
+                }}
+                disabled={isScanning}
+                style={styles.iconButton}
+                accessibilityLabel="Scan again"
+              >
+                {isScanning ? (
+                  <ActivityIndicator size="small" color={THEME.colors.primary} />
+                ) : (
+                  <RefreshCw size={18} color={THEME.colors.textSecondary} />
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => {
+                  triggerLight();
+                  onDismiss();
+                }}
+                style={styles.iconButton}
+                accessibilityLabel="Close"
+              >
+                <X size={20} color={THEME.colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* DEVICE LIST */}
           <ScrollView
             style={styles.deviceList}
+            contentContainerStyle={styles.deviceListContent}
             showsVerticalScrollIndicator={false}
           >
-            {devices.length > 0 ? (
-              devices.map((item) => {
-                const badge = getDeviceBadge(item.name);
+            {uniqueDevices.length > 0 ? (
+              uniqueDevices.map((item) => {
+                const protocol = getProtocolLabel(item);
+                const isThisConnected =
+                  connectionState === 'connected' &&
+                  (currentTvHost ? currentTvHost === item.host : currentTvId === item.id);
+                const isThisSelected =
+                  currentTvHost ? currentTvHost === item.host : currentTvId === item.id;
+
                 return (
                   <TouchableOpacity
-                    key={item.id}
-                    style={styles.deviceCard}
+                    key={item.host}
+                    style={[
+                      styles.deviceCard,
+                      isThisConnected && styles.deviceCardConnected,
+                    ]}
                     onPress={() => {
                       triggerMedium();
                       onSelectDevice(item);
@@ -161,44 +163,56 @@ export const DevicePickerSheet: React.FC<DevicePickerSheetProps> = ({
                     <View
                       style={[
                         styles.deviceIconWrapper,
-                        { backgroundColor: badge.color },
+                        isThisConnected && styles.deviceIconWrapperConnected,
+                        item.isPaired && !isThisConnected && styles.deviceIconWrapperPaired,
                       ]}
                     >
-                      {badge.icon}
+                      <Tv
+                        size={22}
+                        color={
+                          isThisConnected
+                            ? '#10B981'
+                            : item.isPaired
+                            ? THEME.colors.primary
+                            : THEME.colors.textSecondary
+                        }
+                      />
                     </View>
 
                     <View style={styles.deviceInfo}>
                       <Text style={styles.deviceName} numberOfLines={1}>
                         {item.name}
                       </Text>
-                      <Text style={styles.deviceIp} numberOfLines={1}>
-                        {item.host} • Port {item.remotePort}
+                      <Text style={styles.deviceMeta} numberOfLines={1}>
+                        {protocol} • {item.host}
                       </Text>
                     </View>
 
-                    {item.isPaired ? (
-                      <View style={styles.pairedIndicator}>
-                        <CheckCircle2
-                          size={14}
-                          color={THEME.colors.accentGreen}
-                        />
+                    {isThisConnected ? (
+                      <View style={styles.connectedBadge}>
+                        <CheckCircle2 size={13} color="#10B981" />
+                        <Text style={styles.connectedBadgeText}>Connected</Text>
+                      </View>
+                    ) : isThisSelected && (connectionState === 'deviceSelected' || connectionState === 'pairing') ? (
+                      <ActivityIndicator size="small" color={THEME.colors.primary} />
+                    ) : item.isPaired ? (
+                      <View style={styles.pairedBadge}>
                         <Text style={styles.pairedText}>Paired</Text>
                       </View>
                     ) : (
-                      <ChevronRight
-                        size={20}
-                        color={THEME.colors.textSecondary}
-                      />
+                      <ChevronRight size={18} color={THEME.colors.textMuted} />
                     )}
                   </TouchableOpacity>
                 );
               })
             ) : (
               <View style={styles.emptyState}>
-                <Tv size={42} color={THEME.colors.textMuted} />
-                <Text style={styles.emptyTitle}>Scanning your Wi-Fi...</Text>
+                <View style={styles.emptyIconCircle}>
+                  <Wifi size={28} color={THEME.colors.textMuted} />
+                </View>
+                <Text style={styles.emptyTitle}>Searching for TVs...</Text>
                 <Text style={styles.emptySubtitle}>
-                  Make sure your TV is turned on and connected to the same Wi-Fi.
+                  Make sure your TV is turned on and connected to the same Wi-Fi network.
                 </Text>
               </View>
             )}
@@ -212,25 +226,14 @@ export const DevicePickerSheet: React.FC<DevicePickerSheetProps> = ({
                 triggerLight();
                 onConnectByIp();
               }}
+              activeOpacity={0.7}
             >
-              <Plus size={18} color="#FFFFFF" />
+              <Plus size={16} color={THEME.colors.primary} />
               <Text style={styles.manualButtonText}>Connect by IP Address</Text>
             </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.skipButton}
-              onPress={() => {
-                triggerLight();
-                onDismiss();
-              }}
-            >
-              <Text style={styles.skipButtonText}>
-                Use Remote without Connecting
-              </Text>
-            </TouchableOpacity>
           </View>
-        </View>
-      </View>
+        </Pressable>
+      </Pressable>
     </Modal>
   );
 };
@@ -238,7 +241,7 @@ export const DevicePickerSheet: React.FC<DevicePickerSheetProps> = ({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
     justifyContent: 'flex-end',
   },
   sheetContainer: {
@@ -250,10 +253,10 @@ const styles = StyleSheet.create({
     paddingBottom: 28,
     borderTopWidth: 1,
     borderColor: THEME.colors.surfaceBorder,
-    maxHeight: '82%',
+    maxHeight: '75%',
   },
   handleBar: {
-    width: 44,
+    width: 36,
     height: 4,
     borderRadius: 2,
     backgroundColor: THEME.colors.surfaceBorder,
@@ -264,22 +267,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 14,
+    marginBottom: 16,
+    paddingHorizontal: 2,
   },
   headerLeft: {
+    flex: 1,
+  },
+  headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-  },
-  castIconBadge: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: THEME.colors.surfaceElevated,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: THEME.colors.surfaceBorder,
+    gap: 8,
   },
   title: {
     fontSize: 18,
@@ -287,58 +284,55 @@ const styles = StyleSheet.create({
     color: THEME.colors.textPrimary,
   },
   subtitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: THEME.colors.textSecondary,
     marginTop: 2,
   },
-  closeButton: {
-    padding: 6,
-  },
-  scanningBanner: {
-    flexDirection: 'row',
+  iconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     backgroundColor: THEME.colors.surfaceElevated,
-    borderRadius: THEME.borderRadius.md,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginBottom: 14,
     borderWidth: 1,
     borderColor: THEME.colors.surfaceBorder,
   },
-  scanningBannerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  scanningText: {
-    color: THEME.colors.textSecondary,
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  refreshButton: {
-    padding: 4,
-  },
   deviceList: {
-    maxHeight: 280,
+    maxHeight: 300,
+  },
+  deviceListContent: {
+    paddingBottom: 8,
   },
   deviceCard: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: THEME.colors.surfaceElevated,
-    borderRadius: THEME.borderRadius.md,
-    padding: 12,
-    marginBottom: 10,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 8,
     borderWidth: 1,
     borderColor: THEME.colors.surfaceBorder,
   },
+  deviceCardConnected: {
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+    backgroundColor: 'rgba(16, 185, 129, 0.06)',
+  },
   deviceIconWrapper: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
+    width: 42,
+    height: 42,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    backgroundColor: 'rgba(99, 102, 241, 0.12)',
+    marginRight: 14,
+  },
+  deviceIconWrapperConnected: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+  },
+  deviceIconWrapperPaired: {
+    backgroundColor: 'rgba(99, 102, 241, 0.12)',
   },
   deviceInfo: {
     flex: 1,
@@ -349,72 +343,88 @@ const styles = StyleSheet.create({
     color: THEME.colors.textPrimary,
     fontSize: 15,
     fontWeight: '600',
-    marginBottom: 3,
+    marginBottom: 2,
   },
-  deviceIp: {
+  deviceMeta: {
     color: THEME.colors.textMuted,
     fontSize: 12,
   },
-  pairedIndicator: {
+  connectedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 5,
     backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    paddingHorizontal: 8,
+    paddingHorizontal: 9,
     paddingVertical: 4,
     borderRadius: 8,
-    flexShrink: 0,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.25)',
+  },
+  connectedBadgeText: {
+    color: '#10B981',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  pairedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.25)',
   },
   pairedText: {
-    color: THEME.colors.accentGreen,
+    color: '#10B981',
     fontSize: 11,
     fontWeight: '600',
   },
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 36,
+    paddingVertical: 32,
+    paddingHorizontal: 20,
+  },
+  emptyIconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: THEME.colors.surfaceElevated,
+    marginBottom: 12,
   },
   emptyTitle: {
     color: THEME.colors.textPrimary,
     fontSize: 15,
     fontWeight: '600',
-    marginTop: 12,
     marginBottom: 4,
   },
   emptySubtitle: {
-    color: THEME.colors.textSecondary,
+    color: THEME.colors.textMuted,
     fontSize: 12,
     textAlign: 'center',
-    paddingHorizontal: 20,
     lineHeight: 18,
   },
   footer: {
-    marginTop: 14,
-    gap: 8,
+    marginTop: 12,
   },
   manualButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: THEME.colors.primary,
-    borderRadius: THEME.borderRadius.md,
-    paddingVertical: 13,
+    backgroundColor: THEME.colors.surfaceElevated,
+    borderRadius: 14,
+    paddingVertical: 12,
     gap: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.25)',
   },
   manualButtonText: {
-    color: '#FFFFFF',
+    color: THEME.colors.primary,
     fontSize: 14,
     fontWeight: '600',
-  },
-  skipButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-  },
-  skipButtonText: {
-    color: THEME.colors.textSecondary,
-    fontSize: 13,
-    fontWeight: '500',
   },
 });

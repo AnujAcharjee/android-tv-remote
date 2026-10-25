@@ -8,11 +8,10 @@
 const http = require('http');
 const WebSocket = require('ws');
 
-let TV_URL = 'wss://192.168.29.33:3001/';
+let TV_URL = null;
 const PORT = 3002;
-let currentClientKey = 'a80668eb53a8433dbd4cf96bcd37ceeb';
-const DEFAULT_CLIENT_KEY = 'a80668eb53a8433dbd4cf96bcd37ceeb';
-let activeTvTarget = '192.168.29.33:3001';
+let currentClientKey = null; // Dynamically acquired from TV during pairing
+let activeTvTarget = null;
 
 const fullPermissions = [
   'LAUNCH', 'LAUNCH_WEBAPP', 'APP_TO_APP', 'CLOSE', 'TEST_OPEN', 'TEST_PROTECTED',
@@ -86,6 +85,11 @@ function initPointerSocket(socketPath) {
 }
 
 function getOrCreateTvConnection() {
+  if (!TV_URL) {
+    console.log('[Bridge] Waiting for client to specify target TV via ?target=<TV_IP>:<PORT>...');
+    return;
+  }
+
   if (tvWs && (tvWs.readyState === WebSocket.OPEN || tvWs.readyState === WebSocket.CONNECTING)) {
     return;
   }
@@ -96,31 +100,8 @@ function getOrCreateTvConnection() {
   });
 
   tvWs.on('open', () => {
-    console.log('[Bridge] Connected to TV! Sending registration...');
+    console.log('[Bridge] Connected to TV WebSocket!');
     isTvOpen = true;
-
-    // Send full permission registration
-    const regPayload = {
-      type: 'register',
-      id: 'bridge_reg',
-      payload: {
-        'client-key': DEFAULT_CLIENT_KEY,
-        manifest: {
-          manifestVersion: 1,
-          appVersion: '1.0',
-          signed: {
-            created: '20140509',
-            appId: 'com.lge.test',
-            vendorId: 'com.lge',
-            localizedAppNames: { '': 'LG Remote App' },
-            permissions: fullPermissions
-          },
-          permissions: fullPermissions,
-          signatures: [{ signature: 'dummy', signatureVersion: 1 }]
-        }
-      }
-    };
-    tvWs.send(JSON.stringify(regPayload));
 
     while (pendingMessages.length > 0) {
       const msg = pendingMessages.shift();
@@ -240,19 +221,6 @@ wss.on('connection', (clientWs, req) => {
   }
 
   getOrCreateTvConnection();
-
-  // If already authenticated with TV, immediately let phone know so control session starts instantly
-  if (isTvOpen && tvWs && tvWs.readyState === WebSocket.OPEN) {
-    try {
-      clientWs.send(JSON.stringify({
-        type: 'registered',
-        id: 'control_session',
-        payload: {
-          'client-key': currentClientKey || DEFAULT_CLIENT_KEY,
-        },
-      }));
-    } catch {}
-  }
 
   clientWs.on('message', (message) => {
     const text = message.toString();

@@ -25,9 +25,9 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "start": "expo start --offline",
-    "start:wifi": "cross-env REACT_NATIVE_PACKAGER_HOSTNAME=192.168.29.120 EXPO_PUBLIC_DEV_BRIDGE_HOST=192.168.29.120 expo start --offline",
-    "start:tunnel": "expo start --tunnel ngrok",
+    "start": "expo start",
+    "start:wifi": "expo start --lan",
+    "start:tunnel": "expo start --tunnel",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web"

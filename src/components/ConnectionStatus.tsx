@@ -3,7 +3,7 @@
  * Displays the centered connection status pill and active TV name in the header.
  */
 
-import { Wifi, WifiOff } from 'lucide-react-native';
+import { Settings, Wifi, WifiOff } from 'lucide-react-native';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useHaptics } from '../hooks/useHaptics';
@@ -20,6 +20,7 @@ interface ConnectionStatusProps {
 export const ConnectionStatus: React.FC<ConnectionStatusProps> = ({
   state,
   currentTv,
+  onOpenSettings,
   onOpenConnections,
 }) => {
   const { triggerLight } = useHaptics();
@@ -35,6 +36,12 @@ export const ConnectionStatus: React.FC<ConnectionStatusProps> = ({
       case 'deviceSelected':
         return {
           label: 'Connecting...',
+          color: THEME.colors.accentOrange,
+          icon: <Wifi size={14} color={THEME.colors.accentOrange} />,
+        };
+      case 'awaitingPrompt':
+        return {
+          label: 'Confirm on TV',
           color: THEME.colors.accentOrange,
           icon: <Wifi size={14} color={THEME.colors.accentOrange} />,
         };
@@ -71,6 +78,9 @@ export const ConnectionStatus: React.FC<ConnectionStatusProps> = ({
 
   return (
     <View style={styles.header}>
+      {/* Left spacer to keep center pill mathematically centered */}
+      <View style={styles.sideSpacer} />
+
       {/* Connection status pill centered in both X and Y */}
       <Pressable
         onPress={() => {
@@ -90,6 +100,26 @@ export const ConnectionStatus: React.FC<ConnectionStatusProps> = ({
           {status.label}
         </Text>
       </Pressable>
+
+      {/* Settings icon button on the right */}
+      {onOpenSettings ? (
+        <Pressable
+          onPress={() => {
+            triggerLight();
+            onOpenSettings();
+          }}
+          accessibilityLabel="Settings"
+          accessibilityRole="button"
+          style={({ pressed }) => [
+            styles.settingsButton,
+            { opacity: pressed ? 0.7 : 1 },
+          ]}
+        >
+          <Settings size={20} color={THEME.colors.textSecondary} />
+        </Pressable>
+      ) : (
+        <View style={styles.sideSpacer} />
+      )}
     </View>
   );
 };
@@ -98,12 +128,26 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: THEME.colors.surfaceBorder,
     width: '100%',
+  },
+  sideSpacer: {
+    width: 40,
+    height: 40,
+  },
+  settingsButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: THEME.colors.surface,
+    borderWidth: 1,
+    borderColor: THEME.colors.surfaceBorder,
   },
   statusPill: {
     flexDirection: 'row',
@@ -114,7 +158,7 @@ const styles = StyleSheet.create({
     backgroundColor: THEME.colors.surface,
     borderWidth: 1,
     gap: 8,
-    maxWidth: 280,
+    maxWidth: 240,
   },
   statusDot: {
     width: 7,

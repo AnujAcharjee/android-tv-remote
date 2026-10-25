@@ -1,6 +1,6 @@
 /**
  * ConnectionScreen - TV Discovery & First-Time Connection
- * Step 1 of the pairing flow: discovers Android / Google TVs and allows TV selection.
+ * Clean, minimalist, clutter-free screen for discovering and pairing Smart TVs.
  */
 
 import {
@@ -9,14 +9,13 @@ import {
   ChevronRight,
   Plus,
   RefreshCw,
-  Search,
-  Trash2,
   Tv,
   Wifi,
 } from 'lucide-react-native';
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Modal,
   StyleSheet,
@@ -26,6 +25,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useHaptics } from '../hooks/useHaptics';
 import { useTVConnection } from '../hooks/useTVConnection';
 import { DiscoveredTV } from '../types/device';
 import { THEME } from '../utils/constants';
@@ -50,6 +50,8 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({
     forgetDevice,
   } = useTVConnection();
 
+  const { triggerLight, triggerMedium } = useHaptics();
+
   const [manualModalVisible, setManualModalVisible] = useState(false);
   const [manualHost, setManualHost] = useState('');
   const [manualName, setManualName] = useState('');
@@ -60,12 +62,53 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({
     startDiscovery();
   }, []);
 
+  // Deduplicate discovered devices strictly by host/IP address
+  const uniqueDevices = useMemo(() => {
+    const map = new Map<string, DiscoveredTV>();
+    for (const dev of devices) {
+      if (!map.has(dev.host)) {
+        map.set(dev.host, dev);
+      } else {
+        const existing = map.get(dev.host)!;
+        if (!existing.isPaired && dev.isPaired) {
+          map.set(dev.host, dev);
+        }
+      }
+    }
+    return Array.from(map.values());
+  }, [devices]);
+
   const handleSelect = async (item: DiscoveredTV) => {
+    triggerMedium();
     if (onDeviceSelected) {
       onDeviceSelected(item);
     } else {
       await selectDevice(item);
     }
+  };
+
+  const handleLongPress = (item: DiscoveredTV) => {
+    triggerLight();
+    Alert.alert(
+      item.name,
+      `IP: ${item.host}\nProtocol: ${getProtocolLabel(item)}`,
+      [
+        ...(item.isPaired
+          ? [
+              {
+                text: 'Forget Device',
+                style: 'destructive' as const,
+                onPress: () => forgetDevice(item),
+              },
+            ]
+          : []),
+        {
+          text: 'Connect',
+          onPress: () => handleSelect(item),
+        },
+        { text: 'Cancel', style: 'cancel' as const },
+      ]
+    );
   };
 
   const handleAddManual = async () => {
@@ -81,156 +124,212 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({
     }
   };
 
+  const getProtocolLabel = (item: DiscoveredTV): string => {
+    if (item.protocolType === 'webos' || item.pairingPort === 3001 || item.remotePort === 3001) {
+      return 'LG webOS';
+    }
+    if (item.protocolType === 'androidtv' || item.pairingPort === 6467) {
+      return 'Android TV';
+    }
+    return 'Smart TV';
+  };
+
   const renderItem = ({ item }: { item: DiscoveredTV }) => {
-    const isThisConnected = connectionState === 'connected' && currentTv?.id === item.id;
-    const isThisSelected = currentTv?.id === item.id;
-    const protocolLabel = item.protocolType === 'webos' || item.pairingPort === 3001 || item.remotePort === 3001
-      ? 'LG webOS'
-      : item.protocolType === 'androidtv' || item.pairingPort === 6467
-      ? 'Android TV'
-      : 'Smart TV';
+    const isThisConnected = connectionState === 'connected' && currentTv?.host === item.host;
+    const isThisSelected = currentTv?.host === item.host;
+    const protocolLabel = getProtocolLabel(item);
 
     return (
-      <View
+      <TouchableOpacity
         style={[
           styles.deviceCard,
           isThisConnected && styles.deviceCardConnected,
         ]}
+        onPress={() => handleSelect(item)}
+        onLongPress={() => handleLongPress(item)}
+        activeOpacity={0.7}
+        accessibilityLabel={`Connect to ${item.name}`}
+        accessibilityRole="button"
       >
-        <TouchableOpacity
-          style={styles.deviceCardPressable}
-          onPress={() => handleSelect(item)}
-          activeOpacity={0.7}
-          accessibilityLabel={`Connect to ${item.name}`}
-          accessibilityRole="button"
+        <View
+          style={[
+            styles.deviceIconBadge,
+            isThisConnected && styles.deviceIconBadgeConnected,
+            item.isPaired && !isThisConnected && styles.deviceIconBadgePaired,
+          ]}
         >
-          <View style={styles.deviceIconBadge}>
-            <Tv
-              size={24}
-              color={isThisConnected ? '#10B981' : THEME.colors.primary}
-            />
+          <Tv
+            size={22}
+            color={
+              isThisConnected
+                ? '#10B981'
+                : item.isPaired
+                ? THEME.colors.primary
+                : THEME.colors.textSecondary
+            }
+          />
+        </View>
+
+        <View style={styles.deviceDetails}>
+          <Text style={styles.deviceName} numberOfLines={1}>
+            {item.name}
+          </Text>
+          <Text style={styles.deviceMeta} numberOfLines={1}>
+            {protocolLabel} • {item.host}
+          </Text>
+        </View>
+
+        {isThisConnected ? (
+          <View style={styles.connectedBadge}>
+            <CheckCircle2 size={13} color="#10B981" />
+            <Text style={styles.connectedBadgeText}>Connected</Text>
           </View>
-
-          <View style={styles.deviceDetails}>
-            <View style={styles.deviceTitleRow}>
-              <Text style={styles.deviceName} numberOfLines={1}>{item.name}</Text>
-              <View style={styles.protocolBadge}>
-                <Text style={styles.protocolBadgeText}>{protocolLabel}</Text>
-              </View>
-            </View>
-            <Text style={styles.deviceIp}>
-              {item.host} • {item.isPaired ? 'Paired' : 'Ready to Connect'}
-            </Text>
+        ) : isThisSelected && (connectionState === 'deviceSelected' || connectionState === 'pairing') ? (
+          <ActivityIndicator size="small" color={THEME.colors.primary} />
+        ) : item.isPaired ? (
+          <View style={styles.pairedBadge}>
+            <Text style={styles.pairedBadgeText}>Paired</Text>
           </View>
-
-          {isThisConnected ? (
-            <View style={styles.connectedBadge}>
-              <CheckCircle2 size={16} color="#10B981" />
-              <Text style={styles.connectedBadgeText}>Connected</Text>
-            </View>
-          ) : isThisSelected && (connectionState === 'deviceSelected' || connectionState === 'pairing') ? (
-            <ActivityIndicator size="small" color={THEME.colors.primary} />
-          ) : (
-            <ChevronRight size={20} color={THEME.colors.textMuted} />
-          )}
-        </TouchableOpacity>
-
-        {item.isPaired && !isThisConnected ? (
-          <TouchableOpacity
-            style={styles.forgetButton}
-            onPress={() => forgetDevice(item)}
-            accessibilityLabel="Forget device"
-          >
-            <Trash2 size={16} color={THEME.colors.textMuted} />
-          </TouchableOpacity>
-        ) : null}
-      </View>
+        ) : (
+          <ChevronRight size={18} color={THEME.colors.textMuted} />
+        )}
+      </TouchableOpacity>
     );
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
+      {/* HEADER */}
       <View style={styles.header}>
         {onBack ? (
           <TouchableOpacity
-            style={styles.backButton}
+            style={styles.headerIconButton}
             onPress={onBack}
             accessibilityLabel="Go back"
             accessibilityRole="button"
           >
-            <ArrowLeft size={22} color={THEME.colors.textPrimary} />
+            <ArrowLeft size={20} color={THEME.colors.textPrimary} />
           </TouchableOpacity>
         ) : (
-          <View style={{ width: 22 }} />
+          <View style={styles.headerIconButton}>
+            <Tv size={20} color={THEME.colors.primary} />
+          </View>
         )}
-        <Text style={styles.title}>Connect to your TV</Text>
-        <TouchableOpacity
-          style={styles.addButton}
-          onPress={() => setManualModalVisible(true)}
-          accessibilityLabel="Add TV by IP"
-          accessibilityRole="button"
-        >
-          <Plus size={22} color={THEME.colors.textPrimary} />
-        </TouchableOpacity>
-      </View>
 
-      <Text style={styles.subtitle}>
-        Automatically discovering Smart TVs &amp; Android TVs on your Wi-Fi.
-      </Text>
-
-      {/* Primary "Search for TVs" Button */}
-      <View style={styles.searchSection}>
-        <TouchableOpacity
-          style={[styles.searchButton, isScanning && styles.searchButtonActive]}
-          onPress={startDiscovery}
-          disabled={isScanning}
-          accessibilityLabel="Search for TVs"
-          accessibilityRole="button"
-        >
-          {isScanning ? (
-            <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
-          ) : (
-            <Search size={18} color="#FFFFFF" style={{ marginRight: 8 }} />
-          )}
-          <Text style={styles.searchButtonText}>
-            {isScanning ? 'Scanning Wi-Fi for TVs...' : 'Rescan Wi-Fi Network'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Discovered TV List */}
-      <View style={styles.listSection}>
-        <View style={styles.listHeaderRow}>
-          <Text style={styles.sectionTitle}>Available TVs</Text>
-          <Text style={styles.countText}>{devices.length} found</Text>
+        <View style={styles.headerTitleGroup}>
+          <Text style={styles.title}>Available TVs</Text>
         </View>
 
-        <FlatList
-          data={devices}
-          keyExtractor={(item) => item.id}
-          renderItem={renderItem}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <View style={styles.emptyIconCircle}>
-                <Wifi size={36} color={THEME.colors.textMuted} />
-              </View>
-              <Text style={styles.emptyTitle}>
-                {isScanning ? 'Scanning your Wi-Fi network...' : 'No TVs found'}
-              </Text>
-              <Text style={styles.emptySubtitle}>
-                {isScanning
-                  ? 'Searching for nearby Smart TVs and Android TVs...'
-                  : 'Ensure your TV is turned on and connected to the same Wi-Fi, then tap "Rescan Wi-Fi Network".'}
-              </Text>
-            </View>
-          }
-        />
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={styles.headerIconButton}
+            onPress={() => {
+              triggerLight();
+              startDiscovery();
+            }}
+            disabled={isScanning}
+            accessibilityLabel="Rescan Wi-Fi"
+            accessibilityRole="button"
+          >
+            {isScanning ? (
+              <ActivityIndicator size="small" color={THEME.colors.primary} />
+            ) : (
+              <RefreshCw size={18} color={THEME.colors.textSecondary} />
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.headerIconButton}
+            onPress={() => {
+              triggerLight();
+              setManualModalVisible(true);
+            }}
+            accessibilityLabel="Add TV by IP"
+            accessibilityRole="button"
+          >
+            <Plus size={20} color={THEME.colors.textPrimary} />
+          </TouchableOpacity>
+        </View>
       </View>
 
-      {/* Manual IP Entry Modal */}
+      {/* SCANNING & STATUS BANNER */}
+      {isScanning ? (
+        <View style={styles.scanningBanner}>
+          <ActivityIndicator size="small" color={THEME.colors.primary} style={{ marginRight: 8 }} />
+          <Text style={styles.scanningText}>Searching local Wi-Fi for TVs...</Text>
+        </View>
+      ) : (
+        <View style={styles.statusRow}>
+          <Text style={styles.statusSubtitle}>
+            {uniqueDevices.length === 0
+              ? 'No TVs discovered on current Wi-Fi network'
+              : `${uniqueDevices.length} TV${uniqueDevices.length === 1 ? '' : 's'} found • Tap to connect`}
+          </Text>
+        </View>
+      )}
+
+      {/* DISCOVERED TV LIST */}
+      <FlatList
+        data={uniqueDevices}
+        keyExtractor={(item) => item.host}
+        renderItem={renderItem}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+        ListEmptyComponent={
+          !isScanning ? (
+            <View style={styles.emptyContainer}>
+              <View style={styles.emptyIconCircle}>
+                <Wifi size={32} color={THEME.colors.textMuted} />
+              </View>
+              <Text style={styles.emptyTitle}>No TVs Found</Text>
+              <Text style={styles.emptySubtitle}>
+                Make sure your TV is turned on and connected to the same Wi-Fi network as this phone.
+              </Text>
+
+              <View style={styles.emptyActions}>
+                <TouchableOpacity
+                  style={styles.emptyRescanButton}
+                  onPress={() => {
+                    triggerLight();
+                    startDiscovery();
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <RefreshCw size={16} color="#FFFFFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.emptyRescanText}>Rescan Wi-Fi</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.emptyManualButton}
+                  onPress={() => {
+                    triggerLight();
+                    setManualModalVisible(true);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.emptyManualText}>Connect by IP Address</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : undefined
+        }
+      />
+
+      {/* FOOTER HELPER */}
+      {uniqueDevices.length > 0 ? (
+        <View style={styles.footer}>
+          <TouchableOpacity
+            style={styles.footerLink}
+            onPress={() => setManualModalVisible(true)}
+            activeOpacity={0.7}
+          >
+            <Plus size={14} color={THEME.colors.primary} style={{ marginRight: 6 }} />
+            <Text style={styles.footerLinkText}>Can't find your TV? Connect by IP</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      {/* MANUAL IP ENTRY MODAL */}
       <Modal
         visible={manualModalVisible}
         transparent
@@ -281,7 +380,7 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({
                 {isDetecting ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
-                  <Text style={styles.modalConnectText}>Detect &amp; Pair TV</Text>
+                  <Text style={styles.modalConnectText}>Pair TV</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -302,63 +401,55 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 12,
+    paddingVertical: 14,
   },
-  backButton: {
-    padding: 6,
+  headerTitleGroup: {
+    flex: 1,
+    alignItems: 'center',
   },
   title: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
     color: THEME.colors.textPrimary,
   },
-  addButton: {
-    padding: 6,
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  subtitle: {
-    fontSize: 14,
-    color: THEME.colors.textMuted,
-    textAlign: 'center',
-    marginBottom: 20,
-    lineHeight: 20,
+  headerIconButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: THEME.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: THEME.colors.surfaceBorder,
   },
-  searchSection: {
-    marginBottom: 20,
-  },
-  searchButton: {
+  scanningBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: THEME.colors.primary,
+    backgroundColor: 'rgba(79, 128, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(79, 128, 255, 0.2)',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    marginBottom: 16,
   },
-  searchButtonActive: {
-    opacity: 0.8,
+  scanningText: {
+    color: THEME.colors.primary,
+    fontSize: 13,
+    fontWeight: '500',
   },
-  searchButtonText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '600',
+  statusRow: {
+    marginBottom: 16,
+    paddingHorizontal: 4,
   },
-  listSection: {
-    flex: 1,
-  },
-  listHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: THEME.colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-  countText: {
-    fontSize: 12,
+  statusSubtitle: {
+    fontSize: 13,
     color: THEME.colors.textMuted,
   },
   listContent: {
@@ -369,90 +460,90 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: THEME.colors.surface,
-    padding: 14,
-    borderRadius: THEME.borderRadius.lg,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: THEME.colors.surfaceBorder,
   },
-  deviceCardPressable: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
   deviceCardConnected: {
-    borderColor: '#10B981',
-    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+    backgroundColor: 'rgba(16, 185, 129, 0.06)',
   },
   deviceIconBadge: {
     width: 44,
     height: 44,
-    borderRadius: 22,
+    borderRadius: 12,
     backgroundColor: THEME.colors.surfaceElevated,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 14,
   },
+  deviceIconBadgeConnected: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+  },
+  deviceIconBadgePaired: {
+    backgroundColor: 'rgba(79, 128, 255, 0.12)',
+  },
   deviceDetails: {
     flex: 1,
-  },
-  deviceTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
-  },
-  protocolBadge: {
-    backgroundColor: 'rgba(79, 128, 255, 0.15)',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  protocolBadgeText: {
-    color: THEME.colors.primary,
-    fontSize: 10,
-    fontWeight: '700',
+    marginRight: 10,
   },
   deviceName: {
     fontSize: 15,
     fontWeight: '600',
     color: THEME.colors.textPrimary,
+    marginBottom: 3,
   },
-  deviceIp: {
+  deviceMeta: {
     fontSize: 12,
     color: THEME.colors.textMuted,
-  },
-  forgetButton: {
-    padding: 8,
-    marginLeft: 6,
   },
   connectedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
     paddingHorizontal: 10,
     paddingVertical: 5,
-    borderRadius: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.25)',
   },
   connectedBadgeText: {
     color: '#10B981',
     fontSize: 12,
     fontWeight: '600',
   },
+  pairedBadge: {
+    backgroundColor: 'rgba(79, 128, 255, 0.1)',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(79, 128, 255, 0.2)',
+  },
+  pairedBadgeText: {
+    color: THEME.colors.primary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
   emptyContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 60,
+    paddingVertical: 48,
     paddingHorizontal: 20,
   },
   emptyIconCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: THEME.colors.surface,
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: THEME.colors.surfaceElevated,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: THEME.colors.surfaceBorder,
   },
   emptyTitle: {
     fontSize: 17,
@@ -461,11 +552,59 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   emptySubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: THEME.colors.textMuted,
     textAlign: 'center',
-    lineHeight: 20,
-    maxWidth: 280,
+    lineHeight: 19,
+    maxWidth: 290,
+    marginBottom: 24,
+  },
+  emptyActions: {
+    width: '100%',
+    maxWidth: 260,
+    gap: 10,
+  },
+  emptyRescanButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: THEME.colors.primary,
+    height: 46,
+    borderRadius: 12,
+  },
+  emptyRescanText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  emptyManualButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: THEME.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: THEME.colors.surfaceBorder,
+  },
+  emptyManualText: {
+    color: THEME.colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  footer: {
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  footerLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+  },
+  footerLinkText: {
+    color: THEME.colors.primary,
+    fontSize: 13,
+    fontWeight: '500',
   },
   modalOverlay: {
     flex: 1,
@@ -478,7 +617,7 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 340,
     backgroundColor: THEME.colors.surface,
-    borderRadius: THEME.borderRadius.lg,
+    borderRadius: 18,
     padding: 22,
     borderWidth: 1,
     borderColor: THEME.colors.surfaceBorder,
